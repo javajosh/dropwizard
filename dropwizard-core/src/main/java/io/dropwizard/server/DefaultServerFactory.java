@@ -3,8 +3,7 @@ package io.dropwizard.server;
 import com.codahale.metrics.MetricRegistry;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonTypeName;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
+import com.google.common.base.MoreObjects;
 import io.dropwizard.jetty.ConnectorFactory;
 import io.dropwizard.jetty.HttpConnectorFactory;
 import io.dropwizard.jetty.RoutingHandler;
@@ -22,10 +21,11 @@ import org.slf4j.LoggerFactory;
 import javax.validation.Valid;
 import javax.validation.constraints.Min;
 import javax.validation.constraints.NotNull;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-
-// TODO: 5/15/13 <coda> -- add tests for DefaultServerFactory
 
 /**
  * The default implementation of {@link ServerFactory}, which allows for multiple sets of
@@ -69,15 +69,14 @@ import java.util.Map;
 @JsonTypeName("default")
 public class DefaultServerFactory extends AbstractServerFactory {
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultServerFactory.class);
-    @Valid
-    @NotNull
-    private List<ConnectorFactory> applicationConnectors =
-            Lists.newArrayList(HttpConnectorFactory.application());
 
     @Valid
     @NotNull
-    private List<ConnectorFactory> adminConnectors =
-            Lists.newArrayList(HttpConnectorFactory.admin());
+    private List<ConnectorFactory> applicationConnectors = Collections.singletonList(HttpConnectorFactory.application());
+
+    @Valid
+    @NotNull
+    private List<ConnectorFactory> adminConnectors = Collections.singletonList(HttpConnectorFactory.admin());
 
     @Min(2)
     private int adminMaxThreads = 64;
@@ -153,12 +152,12 @@ public class DefaultServerFactory extends AbstractServerFactory {
 
     @Override
     public Server build(Environment environment) {
+        // ensures that the environment is configured before the server is built
+        configure(environment);
+
         printBanner(environment.getName());
         final ThreadPool threadPool = createThreadPool(environment.metrics());
         final Server server = buildServer(environment.lifecycle(), threadPool);
-
-        LOGGER.info("Registering jersey handler with root path prefix: {}", applicationContextPath);
-        environment.getApplicationContext().setContextPath(applicationContextPath);
         final Handler applicationHandler = createAppServlet(server,
                                                             environment.jersey(),
                                                             environment.getObjectMapper(),
@@ -167,8 +166,7 @@ public class DefaultServerFactory extends AbstractServerFactory {
                                                             environment.getJerseyServletContainer(),
                                                             environment.metrics());
 
-        LOGGER.info("Registering admin handler with root path prefix: {}", adminContextPath);
-        environment.getAdminContext().setContextPath(adminContextPath);
+
         final Handler adminHandler = createAdminServlet(server,
                                                         environment.getAdminContext(),
                                                         environment.metrics(),
@@ -177,8 +175,18 @@ public class DefaultServerFactory extends AbstractServerFactory {
                                                                   server,
                                                                   applicationHandler,
                                                                   adminHandler);
-        server.setHandler(addStatsHandler(addRequestLog(server, routingHandler, environment.getName())));
+        final Handler gzipHandler = buildGzipHandler(routingHandler);
+        server.setHandler(addStatsHandler(addRequestLog(server, gzipHandler, environment.getName())));
         return server;
+    }
+
+    @Override
+    public void configure(Environment environment) {
+        LOGGER.info("Registering jersey handler with root path prefix: {}", applicationContextPath);
+        environment.getApplicationContext().setContextPath(applicationContextPath);
+
+        LOGGER.info("Registering admin handler with root path prefix: {}", adminContextPath);
+        environment.getAdminContext().setContextPath(adminContextPath);
     }
 
     private RoutingHandler buildRoutingHandler(MetricRegistry metricRegistry,
@@ -189,7 +197,7 @@ public class DefaultServerFactory extends AbstractServerFactory {
 
         final List<Connector> adConnectors = buildAdminConnectors(metricRegistry, server);
 
-        final Map<Connector, Handler> handlers = Maps.newLinkedHashMap();
+        final Map<Connector, Handler> handlers = new LinkedHashMap<>();
 
         for (Connector connector : appConnectors) {
             server.addConnector(connector);
@@ -211,9 +219,9 @@ public class DefaultServerFactory extends AbstractServerFactory {
         threadPool.setName("dw-admin");
         server.addBean(threadPool);
 
-        final List<Connector> connectors = Lists.newArrayList();
+        final List<Connector> connectors = new ArrayList<>();
         for (ConnectorFactory factory : adminConnectors) {
-            Connector connector = factory.build(server, metricRegistry, "admin", threadPool);
+            final Connector connector = factory.build(server, metricRegistry, "admin", threadPool);
             if (connector instanceof ContainerLifeCycle) {
                 ((ContainerLifeCycle) connector).unmanage(threadPool);
             }
@@ -223,10 +231,22 @@ public class DefaultServerFactory extends AbstractServerFactory {
     }
 
     private List<Connector> buildAppConnectors(MetricRegistry metricRegistry, Server server) {
-        final List<Connector> connectors = Lists.newArrayList();
+        final List<Connector> connectors = new ArrayList<>();
         for (ConnectorFactory factory : applicationConnectors) {
             connectors.add(factory.build(server, metricRegistry, "application", null));
         }
         return connectors;
+    }
+
+    @Override
+    public String toString() {
+        return MoreObjects.toStringHelper(this)
+                .add("applicationConnectors", applicationConnectors)
+                .add("adminConnectors", adminConnectors)
+                .add("adminMaxThreads", adminMaxThreads)
+                .add("adminMinThreads", adminMinThreads)
+                .add("applicationContextPath", applicationContextPath)
+                .add("adminContextPath", adminContextPath)
+                .toString();
     }
 }

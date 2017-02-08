@@ -6,7 +6,7 @@ Dropwizard Views
 
 .. highlight:: text
 
-.. rubric:: The ``dropwizard-views-mustache`` & ``dropwizard-views-freemarker`` modules provides you with simple, fast HTML views using either FreeMarker_ or Mustache_.
+.. rubric:: The ``dropwizard-views-mustache`` & ``dropwizard-views-freemarker`` modules provide you with simple, fast HTML views using either FreeMarker_ or Mustache_.
 
 .. _FreeMarker: http://FreeMarker.sourceforge.net/
 .. _Mustache: http://mustache.github.com/mustache.5.html
@@ -72,7 +72,7 @@ If your template ends with ``.ftl``, it'll be interpreted as a FreeMarker_ templ
 
 Your template file might look something like this:
 
-.. code-block:: html
+.. code-block:: none
     :emphasize-lines: 1,5
 
     <#-- @ftlvariable name="" type="com.example.views.PersonView" -->
@@ -117,3 +117,58 @@ For more information on how to use FreeMarker, see the `FreeMarker`_ documentati
 For more information on how to use Mustache, see the `Mustache`_ and `Mustache.java`_ documentation.
 
  .. _Mustache.java: https://github.com/spullara/mustache.java
+
+.. _man-views-template-errors:
+
+Template Errors
+===============
+
+By default, if there is an error with the template (eg. the template file is not found or there is a
+compilation error with the template), the user will receive a ``500 Internal Sever Error`` with a
+generic HTML message. The exact error will logged under error mode.
+
+To customize the behavior, create an exception mapper that will override the default one by looking
+for ``ViewRenderException``:
+
+.. code-block:: java
+
+    env.jersey().register(new ExtendedExceptionMapper<WebApplicationException>() {
+        @Override
+        public Response toResponse(WebApplicationException exception) {
+            // Return a response here
+        }
+
+        @Override
+        public boolean isMappable(WebApplicationException e) {
+            return ExceptionUtils.indexOfThrowable(e, ViewRenderException.class) != -1;
+        }
+    });
+
+As an example, to return a 404 instead of a internal server error when one's
+mustache templates can't be found:
+
+.. code-block:: java
+
+    env.jersey().register(new ExtendedExceptionMapper<WebApplicationException>() {
+        @Override
+        public Response toResponse(WebApplicationException exception) {
+            return Response.status(Response.Status.NOT_FOUND).build();
+        }
+
+        @Override
+        public boolean isMappable(WebApplicationException e) {
+            return Throwables.getRootCause(e).getClass() == MustacheNotFoundException.class;
+        }
+    });
+
+
+Caching
+===============
+By default templates are cached to improve loading time. If you want to disable it during the development mode,
+set the ``cache`` property to ``false`` in the view configuration.
+
+.. code-block:: yaml
+
+    views:
+      .mustache:
+        cache: false

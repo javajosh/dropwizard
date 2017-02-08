@@ -3,12 +3,19 @@ package io.dropwizard.setup;
 import com.codahale.metrics.Histogram;
 import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.UniformReservoir;
+import com.codahale.metrics.health.HealthCheckRegistry;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.dropwizard.Application;
 import io.dropwizard.Configuration;
 import io.dropwizard.configuration.DefaultConfigurationFactoryFactory;
 import io.dropwizard.configuration.FileConfigurationSourceProvider;
-
-import io.dropwizard.validation.valuehandling.OptionalValidatedValueUnwrapper;
+import io.dropwizard.jackson.Jackson;
+import io.dropwizard.jersey.validation.NonEmptyStringParamUnwrapper;
+import io.dropwizard.jersey.validation.ParamValidatorUnwrapper;
+import io.dropwizard.validation.valuehandling.GuavaOptionalValidatedValueUnwrapper;
+import io.dropwizard.validation.valuehandling.OptionalDoubleValidatedValueUnwrapper;
+import io.dropwizard.validation.valuehandling.OptionalIntValidatedValueUnwrapper;
+import io.dropwizard.validation.valuehandling.OptionalLongValidatedValueUnwrapper;
 import org.hibernate.validator.HibernateValidator;
 import org.hibernate.validator.internal.engine.ValidatorFactoryImpl;
 import org.junit.Before;
@@ -42,6 +49,12 @@ public class BootstrapTest {
     public void hasAnObjectMapper() throws Exception {
         assertThat(bootstrap.getObjectMapper())
                 .isNotNull();
+    }
+
+    @Test
+    public void hasHealthCheckRegistry() {
+        assertThat(bootstrap.getHealthCheckRegistry())
+            .isNotNull();
     }
 
     @Test
@@ -91,10 +104,20 @@ public class BootstrapTest {
     public void defaultsToDefaultValidatorFactory() throws Exception {
         assertThat(bootstrap.getValidatorFactory()).isInstanceOf(ValidatorFactoryImpl.class);
 
-        ValidatorFactoryImpl validatorFactory = (ValidatorFactoryImpl)bootstrap.getValidatorFactory();
-        assertThat(validatorFactory.getValidatedValueHandlers()).hasSize(1);
-        assertThat(validatorFactory.getValidatedValueHandlers().get(0))
-                .isInstanceOf(OptionalValidatedValueUnwrapper.class);
+        ValidatorFactoryImpl validatorFactory = (ValidatorFactoryImpl) bootstrap.getValidatorFactory();
+
+        // It's imperative that the NonEmptyString validator come before the general param validator
+        // because a NonEmptyString is a param that wraps an optional and the Hibernate Validator
+        // can't unwrap nested classes it knows how to unwrap.
+        // https://hibernate.atlassian.net/browse/HV-904
+        assertThat(validatorFactory.getValidatedValueHandlers())
+                .extractingResultOf("getClass")
+                .containsSubsequence(GuavaOptionalValidatedValueUnwrapper.class,
+                                     OptionalDoubleValidatedValueUnwrapper.class,
+                                     OptionalIntValidatedValueUnwrapper.class,
+                                     OptionalLongValidatedValueUnwrapper.class,
+                                     NonEmptyStringParamUnwrapper.class,
+                                     ParamValidatorUnwrapper.class);
     }
 
     @Test
@@ -107,4 +130,19 @@ public class BootstrapTest {
 
         assertThat(bootstrap.getValidatorFactory()).isSameAs(factory);
     }
+
+    @Test
+    public void canUseCustomObjectMapper() {
+        final ObjectMapper minimalObjectMapper = Jackson.newMinimalObjectMapper();
+        bootstrap.setObjectMapper(minimalObjectMapper);
+        assertThat(bootstrap.getObjectMapper()).isSameAs(minimalObjectMapper);
+    }
+
+    @Test
+    public void canUseCustomHealthCheckRegistry() {
+        final HealthCheckRegistry healthCheckRegistry = new HealthCheckRegistry();
+        bootstrap.setHealthCheckRegistry(healthCheckRegistry);
+        assertThat(bootstrap.getHealthCheckRegistry()).isSameAs(healthCheckRegistry);
+    }
+
 }

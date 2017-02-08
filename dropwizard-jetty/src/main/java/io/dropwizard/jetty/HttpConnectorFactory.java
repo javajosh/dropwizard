@@ -1,7 +1,6 @@
 package io.dropwizard.jetty;
 
 import com.codahale.metrics.MetricRegistry;
-import com.codahale.metrics.jetty9.InstrumentedConnectionFactory;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonTypeName;
 import io.dropwizard.util.Duration;
@@ -10,15 +9,23 @@ import io.dropwizard.util.SizeUnit;
 import io.dropwizard.validation.MinDuration;
 import io.dropwizard.validation.MinSize;
 import io.dropwizard.validation.PortRange;
+import org.eclipse.jetty.http.HttpCompliance;
 import org.eclipse.jetty.io.ArrayByteBufferPool;
 import org.eclipse.jetty.io.ByteBufferPool;
-import org.eclipse.jetty.server.*;
+import org.eclipse.jetty.server.ConnectionFactory;
+import org.eclipse.jetty.server.Connector;
+import org.eclipse.jetty.server.ForwardedRequestCustomizer;
+import org.eclipse.jetty.server.HttpConfiguration;
+import org.eclipse.jetty.server.HttpConnectionFactory;
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.util.thread.ScheduledExecutorScheduler;
 import org.eclipse.jetty.util.thread.Scheduler;
 import org.eclipse.jetty.util.thread.ThreadPool;
 
 import javax.validation.constraints.Min;
 import javax.validation.constraints.NotNull;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 import static com.codahale.metrics.MetricRegistry.name;
@@ -43,6 +50,15 @@ import static com.codahale.metrics.MetricRegistry.name;
  *         <td>{@code bindHost}</td>
  *         <td>(none)</td>
  *         <td>The hostname to bind to.</td>
+ *     </tr>
+ *     <tr>
+ *         <td>{@code inheritChannel}</td>
+ *         <td>false</td>
+ *         <td>
+ *             Whether this connector uses a channel inherited from the JVM.
+ *             Use it with <a href="https://github.com/kazuho/p5-Server-Starter">Server::Starter</a>,
+ *             to launch an instance of Jetty on demand.
+ *         </td>
  *     </tr>
  *     <tr>
  *         <td>{@code headerCacheSize}</td>
@@ -102,6 +118,14 @@ import static com.codahale.metrics.MetricRegistry.name;
  *         </td>
  *     </tr>
  *     <tr>
+ *         <td>{@code blockingTimeout}</td>
+ *         <td>(none)</td>
+ *         <td>The timeout applied to blocking operations. This timeout is in addition to the {@code idleTimeout},
+ *             and applies to the total operation (as opposed to the idle timeout that applies to the time no data
+ *             is being sent).
+ *          </td>
+ *     </tr>
+ *     <tr>
  *         <td>{@code minBufferPoolSize}</td>
  *         <td>64 bytes</td>
  *         <td>The minimum size of the buffer pool.</td>
@@ -118,13 +142,15 @@ import static com.codahale.metrics.MetricRegistry.name;
  *     </tr>
  *     <tr>
  *         <td>{@code acceptorThreads}</td>
- *         <td>half the # of CPUs</td>
- *         <td>The number of worker threads dedicated to accepting connections.</td>
+ *         <td>(Jetty's default)</td>
+ *         <td>The number of worker threads dedicated to accepting connections.
+ *         By default is <i>max</i>(1, <i>min</i>(4, #CPUs/8)).</td>
  *     </tr>
  *     <tr>
  *         <td>{@code selectorThreads}</td>
- *         <td>the # of CPUs</td>
- *         <td>The number of worker threads dedicated to sending and receiving data.</td>
+ *         <td>(Jetty's default)</td>
+ *         <td>The number of worker threads dedicated to sending and receiving data.
+ *         By default is <i>max</i>(1, <i>min</i>(4, #CPUs/2)).</td>
  *     </tr>
  *     <tr>
  *         <td>{@code acceptQueueSize}</td>
@@ -159,6 +185,21 @@ import static com.codahale.metrics.MetricRegistry.name;
  *             {@link ForwardedRequestCustomizer} for details.
  *         </td>
  *     </tr>
+ *     <tr>
+ *         <td>{@code httpCompliance}</td>
+ *         <td>RFC7230</td>
+ *         <td>
+ *             This sets the http compliance level used by Jetty when parsing http, this can be useful when using a
+ *             non-RFC7230 compliant front end, such as nginx, which can produce multi-line headers when forwarding
+ *             client certificates using proxy_set_header X-SSL-CERT $ssl_client_cert;
+ *
+ *             Possible values are set forth in the org.eclipse.jetty.http.HttpCompliance enum:
+ *             <ul>
+ *                 <li>RFC7230: Disallow header folding.</li>
+ *                 <li>RFC2616: Allow header folding.</li>
+ *             </ul>
+ *         </td>
+ *     </tr>
  * </table>
  */
 @JsonTypeName("http")
@@ -179,6 +220,8 @@ public class HttpConnectorFactory implements ConnectorFactory {
     private int port = 8080;
 
     private String bindHost = null;
+
+    private boolean inheritChannel = false;
 
     @NotNull
     @MinSize(128)
@@ -204,6 +247,8 @@ public class HttpConnectorFactory implements ConnectorFactory {
     @MinDuration(value = 1, unit = TimeUnit.MILLISECONDS)
     private Duration idleTimeout = Duration.seconds(30);
 
+    private Duration blockingTimeout = null;
+
     @NotNull
     @MinSize(value = 1, unit = SizeUnit.BYTES)
     private Size minBufferPoolSize = Size.bytes(64);
@@ -217,10 +262,10 @@ public class HttpConnectorFactory implements ConnectorFactory {
     private Size maxBufferPoolSize = Size.kilobytes(64);
 
     @Min(1)
-    private int acceptorThreads = Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
+    private Optional<Integer> acceptorThreads = Optional.empty();
 
     @Min(1)
-    private int selectorThreads = Runtime.getRuntime().availableProcessors();
+    private Optional<Integer> selectorThreads = Optional.empty();
 
     @Min(0)
     private Integer acceptQueueSize;
@@ -230,6 +275,7 @@ public class HttpConnectorFactory implements ConnectorFactory {
     private boolean useServerHeader = false;
     private boolean useDateHeader = true;
     private boolean useForwardedHeaders = true;
+    private HttpCompliance httpCompliance = HttpCompliance.RFC7230;
 
     @JsonProperty
     public int getPort() {
@@ -249,6 +295,16 @@ public class HttpConnectorFactory implements ConnectorFactory {
     @JsonProperty
     public void setBindHost(String bindHost) {
         this.bindHost = bindHost;
+    }
+
+    @JsonProperty
+    public boolean isInheritChannel() {
+        return inheritChannel;
+    }
+
+    @JsonProperty
+    public void setInheritChannel(boolean inheritChannel) {
+        this.inheritChannel = inheritChannel;
     }
 
     @JsonProperty
@@ -312,6 +368,16 @@ public class HttpConnectorFactory implements ConnectorFactory {
     }
 
     @JsonProperty
+    public Duration getBlockingTimeout() {
+        return blockingTimeout;
+    }
+
+    @JsonProperty
+    public void setBlockingTimeout(Duration blockingTimeout) {
+        this.blockingTimeout = blockingTimeout;
+    }
+
+    @JsonProperty
     public Size getMinBufferPoolSize() {
         return minBufferPoolSize;
     }
@@ -342,22 +408,22 @@ public class HttpConnectorFactory implements ConnectorFactory {
     }
 
     @JsonProperty
-    public int getAcceptorThreads() {
+    public Optional<Integer> getAcceptorThreads() {
         return acceptorThreads;
     }
 
     @JsonProperty
-    public void setAcceptorThreads(int acceptorThreads) {
+    public void setAcceptorThreads(Optional<Integer> acceptorThreads) {
         this.acceptorThreads = acceptorThreads;
     }
 
     @JsonProperty
-    public int getSelectorThreads() {
+    public Optional<Integer> getSelectorThreads() {
         return selectorThreads;
     }
 
     @JsonProperty
-    public void setSelectorThreads(int selectorThreads) {
+    public void setSelectorThreads(Optional<Integer> selectorThreads) {
         this.selectorThreads = selectorThreads;
     }
 
@@ -421,6 +487,17 @@ public class HttpConnectorFactory implements ConnectorFactory {
         this.useForwardedHeaders = useForwardedHeaders;
     }
 
+    @JsonProperty
+    public HttpCompliance getHttpCompliance() {
+        return httpCompliance;
+    }
+
+    @JsonProperty
+    public void setHttpCompliance(HttpCompliance httpCompliance) {
+        this.httpCompliance = httpCompliance;
+    }
+
+
     @Override
     public Connector build(Server server,
                            MetricRegistry metrics,
@@ -435,7 +512,7 @@ public class HttpConnectorFactory implements ConnectorFactory {
         final ByteBufferPool bufferPool = buildBufferPool();
 
         return buildConnector(server, scheduler, bufferPool, name, threadPool,
-                              new InstrumentedConnectionFactory(httpConnectionFactory,
+                              new Jetty93InstrumentedConnectionFactory(httpConnectionFactory,
                                                                 metrics.timer(httpConnections())));
     }
 
@@ -456,14 +533,23 @@ public class HttpConnectorFactory implements ConnectorFactory {
                                                               threadPool,
                                                               scheduler,
                                                               bufferPool,
-                                                              acceptorThreads,
-                                                              selectorThreads,
+                                                              acceptorThreads.orElse(-1),
+                                                              selectorThreads.orElse(-1),
                                                               factories);
         connector.setPort(port);
         connector.setHost(bindHost);
+        connector.setInheritChannel(inheritChannel);
         if (acceptQueueSize != null) {
             connector.setAcceptQueueSize(acceptQueueSize);
+        } else {
+            // if we do not set the acceptQueueSize, when jetty
+            // creates the ServerSocket, it uses the default backlog of 50, and
+            // not the value from the OS.  Therefore we set to the value
+            // obtained from NetUtil, which will attempt to read the value from the OS.
+            // somaxconn setting
+            connector.setAcceptQueueSize(NetUtil.getTcpBacklog());
         }
+
         connector.setReuseAddress(reuseAddress);
         if (soLingerTime != null) {
             connector.setSoLingerTime((int) soLingerTime.toSeconds());
@@ -475,7 +561,7 @@ public class HttpConnectorFactory implements ConnectorFactory {
     }
 
     protected HttpConnectionFactory buildHttpConnectionFactory(HttpConfiguration httpConfig) {
-        final HttpConnectionFactory httpConnectionFactory = new HttpConnectionFactory(httpConfig);
+        final HttpConnectionFactory httpConnectionFactory = new HttpConnectionFactory(httpConfig, httpCompliance);
         httpConnectionFactory.setInputBufferSize((int) inputBufferSize.toBytes());
         return httpConnectionFactory;
     }
@@ -491,6 +577,9 @@ public class HttpConnectorFactory implements ConnectorFactory {
 
         if (useForwardedHeaders) {
             httpConfig.addCustomizer(new ForwardedRequestCustomizer());
+        }
+        if (blockingTimeout != null) {
+            httpConfig.setBlockingTimeout(blockingTimeout.toMilliseconds());
         }
         return httpConfig;
     }

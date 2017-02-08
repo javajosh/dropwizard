@@ -1,31 +1,32 @@
 package io.dropwizard.testing;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.base.Optional;
 import com.google.common.base.Strings;
+import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Lists;
 import io.dropwizard.Application;
 import io.dropwizard.Configuration;
+import io.dropwizard.cli.Command;
 import io.dropwizard.cli.ServerCommand;
-import io.dropwizard.configuration.ConfigurationFactory;
-import io.dropwizard.configuration.ConfigurationFactoryFactory;
+import io.dropwizard.configuration.YamlConfigurationFactory;
 import io.dropwizard.lifecycle.Managed;
-import io.dropwizard.lifecycle.ServerLifecycleListener;
 import io.dropwizard.setup.Bootstrap;
 import io.dropwizard.setup.Environment;
 import net.sourceforge.argparse4j.inf.Namespace;
+import org.eclipse.jetty.server.Connector;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 
 import javax.annotation.Nullable;
-import javax.validation.Validator;
+import java.lang.reflect.InvocationTargetException;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 
 import static com.google.common.base.MoreObjects.firstNonNull;
-import static com.google.common.base.Throwables.propagate;
 
 /**
  * A test support class for starting and stopping your application at the start and end of a test class.
@@ -38,29 +39,87 @@ import static com.google.common.base.Throwables.propagate;
  * @param <C> the configuration type
  */
 public class DropwizardTestSupport<C extends Configuration> {
-    private final Class<? extends Application<C>> applicationClass;
-    private final String configPath;
-    private final Set<ConfigOverride> configOverrides;
-    private final Optional<String> customPropertyPrefix;
+    protected final Class<? extends Application<C>> applicationClass;
+    protected final String configPath;
+    protected final Set<ConfigOverride> configOverrides;
+    protected final Optional<String> customPropertyPrefix;
+    protected final Function<Application<C>, Command> commandInstantiator;
 
-    private C configuration;
-    private Application<C> application;
-    private Environment environment;
-    private Server jettyServer;
-    private List<ServiceListener<C>> listeners = Lists.newArrayList();
+    /**
+     * Flag that indicates whether instance was constructed with an explicit
+     * Configuration object or not; handling of the two cases differ.
+     * Needed because state of {@link #configuration} changes during lifecycle.
+     */
+    protected final boolean explicitConfig;
+
+    protected C configuration;
+    protected Application<C> application;
+    protected Environment environment;
+    protected Server jettyServer;
+    protected List<ServiceListener<C>> listeners = new ArrayList<>();
 
     public DropwizardTestSupport(Class<? extends Application<C>> applicationClass,
                              @Nullable String configPath,
                              ConfigOverride... configOverrides) {
-        this(applicationClass, configPath, Optional.<String>absent(), configOverrides);
+        this(applicationClass, configPath, Optional.empty(), configOverrides);
     }
 
     public DropwizardTestSupport(Class<? extends Application<C>> applicationClass, String configPath,
                                  Optional<String> customPropertyPrefix, ConfigOverride... configOverrides) {
+        this(applicationClass, configPath, customPropertyPrefix, ServerCommand::new, configOverrides);
+    }
+
+    public DropwizardTestSupport(Class<? extends Application<C>> applicationClass, String configPath,
+                                 Optional<String> customPropertyPrefix,
+                                 Function<Application<C>, Command> commandInstantiator,
+                                 ConfigOverride... configOverrides) {
         this.applicationClass = applicationClass;
         this.configPath = configPath;
         this.configOverrides = ImmutableSet.copyOf(firstNonNull(configOverrides, new ConfigOverride[0]));
         this.customPropertyPrefix = customPropertyPrefix;
+        explicitConfig = false;
+        this.commandInstantiator = commandInstantiator;
+    }
+
+    /**
+     * Alternative constructor that may be used to directly provide Configuration
+     * to use, instead of specifying resource path for locating data to create
+     * Configuration.
+     *
+     * @since 0.9
+     *
+     * @param applicationClass Type of Application to create
+     * @param configuration Pre-constructed configuration object caller provides; will not
+     *   be manipulated in any way, no overriding
+     */
+    public DropwizardTestSupport(Class<? extends Application<C>> applicationClass,
+                                 C configuration) {
+        this(applicationClass, configuration, ServerCommand::new);
+    }
+
+
+    /**
+     * Alternate constructor that allows specifying the command the Dropwizard application is started with.
+     * @since 1.1.0
+     * @param applicationClass Type of Application to create
+     * @param configuration Pre-constructed configuration object caller provides; will not
+     *   be manipulated in any way, no overriding
+     * @param commandInstantiator The {@link Function} used to instantiate the {@link Command} used to
+     *   start the Application
+     */
+    public DropwizardTestSupport(Class<? extends Application<C>> applicationClass,
+                                 C configuration, Function<Application<C>,
+                                 Command> commandInstantiator) {
+        if (configuration == null) {
+            throw new IllegalArgumentException("Can not pass null configuration for explicitly configured instance");
+        }
+        this.applicationClass = applicationClass;
+        configPath = "";
+        configOverrides = ImmutableSet.of();
+        customPropertyPrefix = Optional.empty();
+        this.configuration = configuration;
+        explicitConfig = true;
+        this.commandInstantiator = commandInstantiator;
     }
 
     public DropwizardTestSupport<C> addListener(ServiceListener<C> listener) {
@@ -101,7 +160,8 @@ public class DropwizardTestSupport<C extends Configuration> {
             try {
                 jettyServer.stop();
             } catch (Exception e) {
-                throw propagate(e);
+                Throwables.throwIfUnchecked(e);
+                throw new RuntimeException(e);
             } finally {
                 jettyServer = null;
             }
@@ -120,7 +180,6 @@ public class DropwizardTestSupport<C extends Configuration> {
         }
     }
 
-    @SuppressWarnings("unchecked")
     private void startIfRequired() {
         if (jettyServer != null) {
             return;
@@ -132,16 +191,11 @@ public class DropwizardTestSupport<C extends Configuration> {
             final Bootstrap<C> bootstrap = new Bootstrap<C>(application) {
                 @Override
                 public void run(C configuration, Environment environment) throws Exception {
-                    environment.lifecycle().addServerLifecycleListener(new ServerLifecycleListener() {
-                        @Override
-                        public void serverStarted(Server server) {
-                            jettyServer = server;
-                        }
-                    });
+                    environment.lifecycle().addServerLifecycleListener(server -> jettyServer = server);
                     DropwizardTestSupport.this.configuration = configuration;
                     DropwizardTestSupport.this.environment = environment;
                     super.run(configuration, environment);
-                    for (ServiceListener listener : listeners) {
+                    for (ServiceListener<C> listener : listeners) {
                         try {
                             listener.onRun(configuration, environment, DropwizardTestSupport.this);
                         } catch (Exception ex) {
@@ -150,20 +204,18 @@ public class DropwizardTestSupport<C extends Configuration> {
                     }
                 }
             };
-            if (customPropertyPrefix.isPresent()) {
-                bootstrap.setConfigurationFactoryFactory(new ConfigurationFactoryFactory<C>() {
-                    @Override
-                    public ConfigurationFactory<C> create(Class<C> klass, Validator validator,
-                                                          ObjectMapper objectMapper, String propertyPrefix) {
-                        return new ConfigurationFactory<>(klass, validator, objectMapper, customPropertyPrefix.get());
-                    }
-                });
+            if (explicitConfig) {
+                bootstrap.setConfigurationFactoryFactory((klass, validator, objectMapper, propertyPrefix) ->
+                    new POJOConfigurationFactory<>(configuration));
+            } else if (customPropertyPrefix.isPresent()) {
+                bootstrap.setConfigurationFactoryFactory((klass, validator, objectMapper, propertyPrefix) ->
+                    new YamlConfigurationFactory<>(klass, validator, objectMapper, customPropertyPrefix.get()));
             }
 
             application.initialize(bootstrap);
-            final ServerCommand<C> command = new ServerCommand<>(application);
+            final Command command = commandInstantiator.apply(application);
 
-            ImmutableMap.Builder<String, Object> file = ImmutableMap.builder();
+            final ImmutableMap.Builder<String, Object> file = ImmutableMap.builder();
             if (!Strings.isNullOrEmpty(configPath)) {
                 file.put("file", configPath);
             }
@@ -171,7 +223,8 @@ public class DropwizardTestSupport<C extends Configuration> {
 
             command.run(bootstrap, namespace);
         } catch (Exception e) {
-            throw propagate(e);
+            Throwables.throwIfUnchecked(e);
+            throw new RuntimeException(e);
         }
     }
 
@@ -184,14 +237,19 @@ public class DropwizardTestSupport<C extends Configuration> {
     }
 
     public int getAdminPort() {
-        return ((ServerConnector) jettyServer.getConnectors()[1]).getLocalPort();
+        final Connector[] connectors = jettyServer.getConnectors();
+        return ((ServerConnector) connectors[connectors.length - 1]).getLocalPort();
+    }
+
+    public int getPort(int connectorIndex) {
+        return ((ServerConnector) jettyServer.getConnectors()[connectorIndex]).getLocalPort();
     }
 
     public Application<C> newApplication() {
         try {
-            return applicationClass.newInstance();
-        } catch (Exception e) {
-            throw propagate(e);
+            return applicationClass.getConstructor().newInstance();
+        } catch (NoSuchMethodException | InstantiationException | IllegalAccessException | InvocationTargetException e) {
+            throw new RuntimeException(e);
         }
     }
 

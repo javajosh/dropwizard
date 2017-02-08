@@ -12,6 +12,8 @@ import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.util.thread.ThreadPool;
 import org.hibernate.validator.constraints.NotEmpty;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.validation.Valid;
 import javax.validation.constraints.NotNull;
@@ -52,6 +54,9 @@ import javax.validation.constraints.NotNull;
  */
 @JsonTypeName("simple")
 public class SimpleServerFactory extends AbstractServerFactory {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(SimpleServerFactory.class);
+
     @Valid
     @NotNull
     private ConnectorFactory connector = HttpConnectorFactory.application();
@@ -94,11 +99,13 @@ public class SimpleServerFactory extends AbstractServerFactory {
 
     @Override
     public Server build(Environment environment) {
+        // ensures that the environment is configured before the server is built
+        configure(environment);
+
         printBanner(environment.getName());
         final ThreadPool threadPool = createThreadPool(environment.metrics());
         final Server server = buildServer(environment.lifecycle(), threadPool);
 
-        environment.getApplicationContext().setContextPath(applicationContextPath);
         final Handler applicationHandler = createAppServlet(server,
                                                             environment.jersey(),
                                                             environment.getObjectMapper(),
@@ -107,7 +114,6 @@ public class SimpleServerFactory extends AbstractServerFactory {
                                                             environment.getJerseyServletContainer(),
                                                             environment.metrics());
 
-        environment.getAdminContext().setContextPath(adminContextPath);
         final Handler adminHandler = createAdminServlet(server,
                                                         environment.getAdminContext(),
                                                         environment.metrics(),
@@ -124,8 +130,18 @@ public class SimpleServerFactory extends AbstractServerFactory {
                 applicationContextPath, applicationHandler,
                 adminContextPath, adminHandler
         ));
-        server.setHandler(addStatsHandler(addRequestLog(server, routingHandler, environment.getName())));
+        final Handler gzipHandler = buildGzipHandler(routingHandler);
+        server.setHandler(addStatsHandler(addRequestLog(server, gzipHandler, environment.getName())));
 
         return server;
+    }
+
+    @Override
+    public void configure(Environment environment) {
+        LOGGER.info("Registering jersey handler with root path prefix: {}", applicationContextPath);
+        environment.getApplicationContext().setContextPath(applicationContextPath);
+
+        LOGGER.info("Registering admin handler with root path prefix: {}", adminContextPath);
+        environment.getAdminContext().setContextPath(adminContextPath);
     }
 }

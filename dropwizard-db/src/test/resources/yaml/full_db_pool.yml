@@ -27,9 +27,12 @@ autoCommentsEnabled: false
 abandonWhenPercentageFull: 75
 alternateUsernamesAllowed: true
 commitOnReturn: true
+rollbackOnReturn: true
 autoCommitByDefault: false
 defaultCatalog: test_catalog
 defaultTransactionIsolation: read-committed
+removeAbandoned: true
+removeAbandonedTimeout: 15s
 useFairQueue: false
 
 logAbandonedConnections: true
@@ -39,3 +42,5 @@ checkConnectionWhileIdle: false
 checkConnectionOnBorrow: true
 checkConnectionOnConnect: false
 checkConnectionOnReturn: true
+
+validatorClassName: io.dropwizard.db.CustomConnectionValidator

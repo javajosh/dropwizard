@@ -2,14 +2,14 @@ package io.dropwizard.metrics;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.io.Resources;
-import io.dropwizard.configuration.ConfigurationFactory;
+import io.dropwizard.configuration.YamlConfigurationFactory;
 import io.dropwizard.jackson.Jackson;
 import io.dropwizard.logging.BootstrapLogging;
 import io.dropwizard.util.Duration;
+import io.dropwizard.validation.BaseValidator;
 import org.junit.Before;
 import org.junit.Test;
 
-import javax.validation.Validation;
 import java.io.File;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -20,10 +20,10 @@ public class MetricsFactoryTest {
     }
 
     private final ObjectMapper objectMapper = Jackson.newObjectMapper();
-    private final ConfigurationFactory<MetricsFactory> factory =
-            new ConfigurationFactory<>(MetricsFactory.class,
-                                       Validation.buildDefaultValidatorFactory().getValidator(),
-                                       objectMapper, "dw");
+    private final YamlConfigurationFactory<MetricsFactory> factory =
+            new YamlConfigurationFactory<>(MetricsFactory.class,
+                                           BaseValidator.newValidator(),
+                                           objectMapper, "dw");
     private MetricsFactory config;
 
     @Before

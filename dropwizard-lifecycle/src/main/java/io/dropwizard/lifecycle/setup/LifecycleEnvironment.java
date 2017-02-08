@@ -1,6 +1,5 @@
 package io.dropwizard.lifecycle.setup;
 
-import com.google.common.collect.Lists;
 import io.dropwizard.lifecycle.JettyManaged;
 import io.dropwizard.lifecycle.Managed;
 import io.dropwizard.lifecycle.ServerLifecycleListener;
@@ -11,9 +10,11 @@ import org.eclipse.jetty.util.component.LifeCycle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ThreadFactory;
 
-import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.Objects.requireNonNull;
 
 public class LifecycleEnvironment {
     private static final Logger LOGGER = LoggerFactory.getLogger(LifecycleEnvironment.class);
@@ -22,8 +23,8 @@ public class LifecycleEnvironment {
     private final List<LifeCycle.Listener> lifecycleListeners;
 
     public LifecycleEnvironment() {
-        this.managedObjects = Lists.newArrayList();
-        this.lifecycleListeners = Lists.newArrayList();
+        this.managedObjects = new ArrayList<>();
+        this.lifecycleListeners = new ArrayList<>();
     }
 
     public List<LifeCycle> getManagedObjects() {
@@ -38,7 +39,7 @@ public class LifecycleEnvironment {
      * @param managed a managed object
      */
     public void manage(Managed managed) {
-        managedObjects.add(new JettyManaged(checkNotNull(managed)));
+        managedObjects.add(new JettyManaged(requireNonNull(managed)));
     }
 
     /**
@@ -47,15 +48,23 @@ public class LifecycleEnvironment {
      * @param managed a Jetty-managed object
      */
     public void manage(LifeCycle managed) {
-        managedObjects.add(checkNotNull(managed));
+        managedObjects.add(requireNonNull(managed));
     }
 
     public ExecutorServiceBuilder executorService(String nameFormat) {
         return new ExecutorServiceBuilder(this, nameFormat);
     }
+    
+    public ExecutorServiceBuilder executorService(String nameFormat, ThreadFactory factory) {
+        return new ExecutorServiceBuilder(this, nameFormat, factory);
+    }
 
     public ScheduledExecutorServiceBuilder scheduledExecutorService(String nameFormat) {
         return scheduledExecutorService(nameFormat, false);
+    }
+    
+    public ScheduledExecutorServiceBuilder scheduledExecutorService(String nameFormat, ThreadFactory factory) {
+        return new ScheduledExecutorServiceBuilder(this, nameFormat, factory);
     }
 
     public ScheduledExecutorServiceBuilder scheduledExecutorService(String nameFormat, boolean useDaemonThreads) {

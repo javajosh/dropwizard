@@ -1,8 +1,7 @@
 package io.dropwizard.hibernate;
 
-import com.google.common.collect.Sets;
-import io.dropwizard.db.DataSourceFactory;
 import io.dropwizard.db.ManagedDataSource;
+import io.dropwizard.db.PooledDataSourceFactory;
 import io.dropwizard.setup.Environment;
 import org.hibernate.SessionFactory;
 import org.hibernate.boot.registry.StandardServiceRegistryBuilder;
@@ -18,6 +17,7 @@ import javax.sql.DataSource;
 import java.util.List;
 import java.util.Map;
 import java.util.SortedSet;
+import java.util.TreeSet;
 
 public class SessionFactoryFactory {
     private static final Logger LOGGER = LoggerFactory.getLogger(SessionFactoryFactory.class);
@@ -25,14 +25,14 @@ public class SessionFactoryFactory {
 
     public SessionFactory build(HibernateBundle<?> bundle,
                                 Environment environment,
-                                DataSourceFactory dbConfig,
+                                PooledDataSourceFactory dbConfig,
                                 List<Class<?>> entities) {
         return build(bundle, environment, dbConfig, entities, DEFAULT_NAME);
     }
 
     public SessionFactory build(HibernateBundle<?> bundle,
                                 Environment environment,
-                                DataSourceFactory dbConfig,
+                                PooledDataSourceFactory dbConfig,
                                 List<Class<?>> entities,
                                 String name) {
         final ManagedDataSource dataSource = dbConfig.build(environment.metrics(), name);
@@ -41,7 +41,7 @@ public class SessionFactoryFactory {
 
     public SessionFactory build(HibernateBundle<?> bundle,
                                 Environment environment,
-                                DataSourceFactory dbConfig,
+                                PooledDataSourceFactory dbConfig,
                                 ManagedDataSource dataSource,
                                 List<Class<?>> entities) {
         final ConnectionProvider provider = buildConnectionProvider(dataSource,
@@ -65,7 +65,7 @@ public class SessionFactoryFactory {
     }
 
     private SessionFactory buildSessionFactory(HibernateBundle<?> bundle,
-                                               DataSourceFactory dbConfig,
+                                               PooledDataSourceFactory dbConfig,
                                                ConnectionProvider connectionProvider,
                                                Map<String, String> properties,
                                                List<Class<?>> entities) {
@@ -88,15 +88,20 @@ public class SessionFactoryFactory {
 
         final ServiceRegistry registry = new StandardServiceRegistryBuilder()
                 .addService(ConnectionProvider.class, connectionProvider)
-                .applySettings(properties)
+                .applySettings(configuration.getProperties())
                 .build();
+
+        configure(configuration, registry);
 
         return configuration.buildSessionFactory(registry);
     }
 
+    protected void configure(Configuration configuration, ServiceRegistry registry) {
+    }
+
     private void addAnnotatedClasses(Configuration configuration,
                                      Iterable<Class<?>> entities) {
-        final SortedSet<String> entityClasses = Sets.newTreeSet();
+        final SortedSet<String> entityClasses = new TreeSet<>();
         for (Class<?> klass : entities) {
             configuration.addAnnotatedClass(klass);
             entityClasses.add(klass.getCanonicalName());

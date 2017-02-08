@@ -2,18 +2,20 @@ package io.dropwizard.views;
 
 import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.Timer;
+import com.google.common.annotations.VisibleForTesting;
 
 import javax.ws.rs.Produces;
 import javax.ws.rs.WebApplicationException;
-import javax.ws.rs.core.*;
+import javax.ws.rs.core.Context;
+import javax.ws.rs.core.HttpHeaders;
+import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.MultivaluedMap;
 import javax.ws.rs.ext.MessageBodyWriter;
 import javax.ws.rs.ext.Provider;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Type;
-import java.text.MessageFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.ServiceLoader;
@@ -23,14 +25,8 @@ import static com.codahale.metrics.MetricRegistry.name;
 @Provider
 @Produces({ MediaType.TEXT_HTML, MediaType.APPLICATION_XHTML_XML })
 public class ViewMessageBodyWriter implements MessageBodyWriter<View> {
-    private static final String MISSING_TEMPLATE_MSG =
-            "<html>" +
-                "<head><title>Missing Template</title></head>" +
-                "<body><h1>Missing Template</h1><p>Template \"{0}\" not found.</p></body>" +
-            "</html>";
 
     @Context
-    @SuppressWarnings("UnusedDeclaration")
     private HttpHeaders headers;
 
     private final Iterable<ViewRenderer> renderers;
@@ -67,7 +63,7 @@ public class ViewMessageBodyWriter implements MessageBodyWriter<View> {
                         Annotation[] annotations,
                         MediaType mediaType,
                         MultivaluedMap<String, Object> httpHeaders,
-                        OutputStream entityStream) throws IOException, WebApplicationException {
+                        OutputStream entityStream) throws IOException {
         final Timer.Context context = metricRegistry.timer(name(t.getClass(), "rendering")).time();
         try {
             for (ViewRenderer renderer : renderers) {
@@ -77,12 +73,8 @@ public class ViewMessageBodyWriter implements MessageBodyWriter<View> {
                 }
             }
             throw new ViewRenderException("Unable to find a renderer for " + t.getTemplateName());
-        } catch (FileNotFoundException e) {
-            final String msg = MessageFormat.format(MISSING_TEMPLATE_MSG, t.getTemplateName());
-            throw new WebApplicationException(Response.serverError()
-                                                      .type(MediaType.TEXT_HTML_TYPE)
-                                                      .entity(msg)
-                                                      .build());
+        } catch (ViewRenderException e) {
+            throw new WebApplicationException(e);
         } finally {
             context.stop();
         }
@@ -96,5 +88,10 @@ public class ViewMessageBodyWriter implements MessageBodyWriter<View> {
             }
         }
         return Locale.getDefault();
+    }
+
+    @VisibleForTesting
+    Iterable<ViewRenderer> getRenderers() {
+        return renderers;
     }
 }

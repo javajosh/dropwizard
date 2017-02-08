@@ -4,10 +4,12 @@ import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.net.SyslogAppender;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.Appender;
-import ch.qos.logback.core.Layout;
 import ch.qos.logback.core.net.SyslogConstants;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonTypeName;
+import io.dropwizard.logging.async.AsyncAppenderFactory;
+import io.dropwizard.logging.filter.LevelFilterFactory;
+import io.dropwizard.logging.layout.LayoutFactory;
 
 import javax.validation.constraints.Max;
 import javax.validation.constraints.Min;
@@ -68,7 +70,7 @@ import java.util.regex.Pattern;
  * @see AbstractAppenderFactory
  */
 @JsonTypeName("syslog")
-public class SyslogAppenderFactory extends AbstractAppenderFactory {
+public class SyslogAppenderFactory extends AbstractAppenderFactory<ILoggingEvent> {
     public enum Facility {
         AUTH,
         AUTHPRIV,
@@ -96,14 +98,14 @@ public class SyslogAppenderFactory extends AbstractAppenderFactory {
     private static final String LOG_TOKEN_PID = "%pid";
 
     private static final Pattern PID_PATTERN = Pattern.compile("(\\d+)@");
-    private static String PID = "";
+    private static String pid = "";
 
     // make an attempt to get the PID of the process
     // this will only work on UNIX platforms; for others, the PID will be "unknown"
     static {
         final Matcher matcher = PID_PATTERN.matcher(ManagementFactory.getRuntimeMXBean().getName());
         if (matcher.find()) {
-            PID = "[" + matcher.group(1) + "]";
+            pid = "[" + matcher.group(1) + "]";
         }
     }
 
@@ -200,18 +202,22 @@ public class SyslogAppenderFactory extends AbstractAppenderFactory {
     }
 
     @Override
-    public Appender<ILoggingEvent> build(LoggerContext context, String applicationName, Layout<ILoggingEvent> layout) {
+    public Appender<ILoggingEvent> build(LoggerContext context, String applicationName, LayoutFactory<ILoggingEvent> layoutFactory,
+                                         LevelFilterFactory<ILoggingEvent> levelFilterFactory, AsyncAppenderFactory<ILoggingEvent> asyncAppenderFactory) {
         final SyslogAppender appender = new SyslogAppender();
         appender.setName("syslog-appender");
         appender.setContext(context);
-        appender.setSuffixPattern(logFormat.replaceAll(LOG_TOKEN_PID, PID).replaceAll(LOG_TOKEN_NAME, Matcher.quoteReplacement(applicationName)));
+        appender.setSuffixPattern(logFormat
+                .replaceAll(LOG_TOKEN_PID, pid)
+                .replaceAll(LOG_TOKEN_NAME, Matcher.quoteReplacement(applicationName)));
         appender.setSyslogHost(host);
         appender.setPort(port);
         appender.setFacility(facility.toString().toLowerCase(Locale.ENGLISH));
         appender.setThrowableExcluded(!includeStackTrace);
         appender.setStackTracePattern(stackTracePrefix);
-        addThresholdFilter(appender, threshold);
+        appender.addFilter(levelFilterFactory.build(threshold));
+        getFilterFactories().forEach(f -> appender.addFilter(f.build()));
         appender.start();
-        return wrapAsync(appender);
+        return wrapAsync(appender, asyncAppenderFactory);
     }
 }

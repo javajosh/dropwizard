@@ -8,19 +8,33 @@ import org.eclipse.jetty.server.session.SessionHandler;
 import org.eclipse.jetty.servlet.FilterHolder;
 import org.eclipse.jetty.servlet.ServletHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
+import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceCollection;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 import org.mockito.ArgumentCaptor;
 
-import javax.servlet.*;
+import javax.servlet.Filter;
+import javax.servlet.FilterRegistration;
+import javax.servlet.GenericServlet;
+import javax.servlet.Servlet;
+import javax.servlet.ServletContextListener;
+import javax.servlet.ServletRegistration;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 public class ServletEnvironmentTest {
     private final ServletHandler servletHandler = mock(ServletHandler.class);
     private final MutableServletContextHandler handler = mock(MutableServletContextHandler.class);
     private final ServletEnvironment environment = new ServletEnvironment(handler);
+
+    @Rule
+    public TemporaryFolder tempDir = new TemporaryFolder();
 
     @Before
     public void setUp() throws Exception {
@@ -113,10 +127,57 @@ public class ServletEnvironmentTest {
     }
 
     @Test
+    public void setsBaseResource() throws Exception {
+        final Resource testResource = Resource.newResource(tempDir.newFolder());
+        environment.setBaseResource(testResource);
+
+        verify(handler).setBaseResource(testResource);
+    }
+
+    @Test
+    public void setsBaseResourceList() throws Exception {
+        Resource wooResource = Resource.newResource(tempDir.newFolder());
+        Resource fooResource = Resource.newResource(tempDir.newFolder());
+
+        final Resource[] testResources = new Resource[]{wooResource, fooResource};
+        environment.setBaseResource(testResources);
+
+        ArgumentCaptor<Resource> captor = ArgumentCaptor.forClass(Resource.class);
+        verify(handler).setBaseResource(captor.capture());
+
+        Resource actualResource = captor.getValue();
+        assertThat(actualResource).isInstanceOf(ResourceCollection.class);
+
+        ResourceCollection actualResourceCollection = (ResourceCollection) actualResource;
+        assertThat(actualResourceCollection.getResources()).contains(wooResource, fooResource);
+
+    }
+
+    @Test
     public void setsResourceBase() throws Exception {
         environment.setResourceBase("/woo");
 
         verify(handler).setResourceBase("/woo");
+    }
+
+    @Test
+    public void setsBaseResourceStringList() throws Exception {
+        String wooResource = tempDir.newFolder().getAbsolutePath();
+        String fooResource = tempDir.newFolder().getAbsolutePath();
+
+        final String[] testResources = new String[]{wooResource, fooResource};
+        environment.setBaseResource(testResources);
+
+        ArgumentCaptor<Resource> captor = ArgumentCaptor.forClass(Resource.class);
+        verify(handler).setBaseResource(captor.capture());
+
+        Resource actualResource = captor.getValue();
+        assertThat(actualResource).isInstanceOf(ResourceCollection.class);
+
+        ResourceCollection actualResourceCollection = (ResourceCollection) actualResource;
+        assertThat(actualResourceCollection.getResources()).contains(Resource.newResource(wooResource),
+            Resource.newResource(fooResource));
+
     }
 
     @Test

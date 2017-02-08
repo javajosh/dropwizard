@@ -8,6 +8,7 @@ import com.google.common.hash.Hashing;
 import com.google.common.io.Resources;
 import com.google.common.net.HttpHeaders;
 import com.google.common.net.MediaType;
+
 import javax.servlet.ServletException;
 import javax.servlet.ServletOutputStream;
 import javax.servlet.http.HttpServlet;
@@ -18,6 +19,7 @@ import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.charset.Charset;
 import java.util.List;
+
 import static com.google.common.base.Preconditions.checkArgument;
 
 public class AssetServlet extends HttpServlet {
@@ -161,7 +163,9 @@ public class AssetServlet extends HttpServlet {
                     if (defaultCharset != null && mediaType.is(MediaType.ANY_TEXT_TYPE)) {
                         mediaType = mediaType.withCharset(defaultCharset);
                     }
-                } catch (IllegalArgumentException ignore) {}
+                } catch (IllegalArgumentException ignore) {
+                    // ignore
+                }
             }
 
             if (mediaType.is(MediaType.ANY_VIDEO_TYPE)
@@ -176,13 +180,12 @@ public class AssetServlet extends HttpServlet {
             }
 
             try (ServletOutputStream output = resp.getOutputStream()) {
-                 if (usingRanges) {
-                    for (final ByteRange range : ranges) {
+                if (usingRanges) {
+                    for (ByteRange range : ranges) {
                         output.write(cachedAsset.getResource(), range.getStart(),
                                 range.getEnd() - range.getStart() + 1);
                     }
-                }
-                else {
+                } else {
                     output.write(cachedAsset.getResource());
                 }
             }
@@ -196,10 +199,10 @@ public class AssetServlet extends HttpServlet {
         final String requestedResourcePath = SLASHES.trimFrom(key.substring(uriPath.length()));
         final String absoluteRequestedResourcePath = SLASHES.trimFrom(this.resourcePath + requestedResourcePath);
 
-        URL requestedResourceURL = Resources.getResource(absoluteRequestedResourcePath);
+        URL requestedResourceURL = getResourceUrl(absoluteRequestedResourcePath);
         if (ResourceURL.isDirectory(requestedResourceURL)) {
             if (indexFile != null) {
-                requestedResourceURL = Resources.getResource(absoluteRequestedResourcePath + '/' + indexFile);
+                requestedResourceURL = getResourceUrl(absoluteRequestedResourcePath + '/' + indexFile);
             } else {
                 // directory requested but no index file defined
                 return null;
@@ -214,7 +217,15 @@ public class AssetServlet extends HttpServlet {
 
         // zero out the millis since the date we get back from If-Modified-Since will not have them
         lastModified = (lastModified / 1000) * 1000;
-        return new CachedAsset(Resources.toByteArray(requestedResourceURL), lastModified);
+        return new CachedAsset(readResource(requestedResourceURL), lastModified);
+    }
+
+    protected URL getResourceUrl(String absoluteRequestedResourcePath) {
+        return Resources.getResource(absoluteRequestedResourcePath);
+    }
+
+    protected byte[] readResource(URL requestedResourceURL) throws IOException {
+        return Resources.toByteArray(requestedResourceURL);
     }
 
     private boolean isCachedClientSide(HttpServletRequest req, CachedAsset cachedAsset) {
@@ -232,7 +243,7 @@ public class AssetServlet extends HttpServlet {
     private ImmutableList<ByteRange> parseRangeHeader(final String rangeHeader,
             final int resourceLength) {
         final ImmutableList.Builder<ByteRange> builder = ImmutableList.builder();
-        if (rangeHeader.indexOf("=") != -1) {
+        if (rangeHeader.contains("=")) {
             final String[] parts = rangeHeader.split("=");
             if (parts.length > 1) {
                 final List<String> ranges = Splitter.on(",").trimResults().splitToList(parts[1]);

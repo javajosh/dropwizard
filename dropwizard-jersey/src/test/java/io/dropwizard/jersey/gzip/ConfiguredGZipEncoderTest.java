@@ -1,5 +1,14 @@
 package io.dropwizard.jersey.gzip;
 
+import org.junit.Test;
+
+import javax.ws.rs.WebApplicationException;
+import javax.ws.rs.client.ClientRequestContext;
+import javax.ws.rs.core.HttpHeaders;
+import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.MultivaluedHashMap;
+import javax.ws.rs.core.MultivaluedMap;
+import javax.ws.rs.ext.WriterInterceptorContext;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.annotation.Annotation;
@@ -7,21 +16,10 @@ import java.lang.reflect.Type;
 import java.util.Collection;
 import java.util.zip.GZIPOutputStream;
 
-import javax.ws.rs.WebApplicationException;
-import javax.ws.rs.client.ClientRequestContext;
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.ext.InterceptorContext;
-import javax.ws.rs.ext.WriterInterceptorContext;
-
-import javax.ws.rs.core.HttpHeaders;
-import javax.ws.rs.core.MultivaluedMap;
-import javax.ws.rs.core.MultivaluedHashMap;
-
-import org.junit.Test;
-
-import static org.junit.Assert.*;
-import static org.hamcrest.CoreMatchers.*;
-
+import static org.hamcrest.CoreMatchers.instanceOf;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.CoreMatchers.not;
+import static org.junit.Assert.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -30,7 +28,7 @@ public class ConfiguredGZipEncoderTest {
     @Test
     public void gzipParametersSpec() throws IOException {
         ClientRequestContext context = mock(ClientRequestContext.class);
-        MultivaluedMap<String, Object> headers = new MultivaluedHashMap<String, Object>();
+        MultivaluedMap<String, Object> headers = new MultivaluedHashMap<>();
         when(context.getHeaders()).thenReturn(headers);
         headers.put(HttpHeaders.CONTENT_ENCODING, null);
         when(context.hasEntity()).thenReturn(true);
@@ -101,7 +99,7 @@ public class ConfiguredGZipEncoderTest {
 
         @Override
         public void proceed() throws IOException, WebApplicationException {
-            proceedCalled=true;
+            proceedCalled = true;
         }
 
         @Override

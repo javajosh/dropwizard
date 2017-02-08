@@ -33,7 +33,7 @@ public class NonblockingServletHolder extends ServletHolder {
     }
 
     @Override
-    public Servlet getServlet() throws ServletException {
+    public synchronized Servlet getServlet() throws ServletException {
         return servlet;
     }
 
@@ -43,12 +43,12 @@ public class NonblockingServletHolder extends ServletHolder {
                        ServletResponse response) throws ServletException, IOException {
         final boolean asyncSupported = baseRequest.isAsyncSupported();
         if (!isAsyncSupported()) {
-            baseRequest.setAsyncSupported(false);
+            baseRequest.setAsyncSupported(false, null);
         }
         try {
             servlet.service(request, response);
         } finally {
-            baseRequest.setAsyncSupported(asyncSupported);
+            baseRequest.setAsyncSupported(asyncSupported, null);
         }
     }
 }

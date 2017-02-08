@@ -1,30 +1,49 @@
 package io.dropwizard.client;
 
-import com.codahale.metrics.MetricRegistry;
-import com.codahale.metrics.httpclient.HttpClientMetricNameStrategies;
-import com.codahale.metrics.httpclient.InstrumentedHttpClientConnectionManager;
-import com.codahale.metrics.httpclient.InstrumentedHttpRequestExecutor;
-import com.google.common.base.Optional;
-import com.google.common.collect.ImmutableList;
-import io.dropwizard.client.proxy.AuthConfiguration;
-import io.dropwizard.client.proxy.ProxyConfiguration;
-import io.dropwizard.util.Duration;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.validateMockitoUsage;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.mockito.MockitoAnnotations.initMocks;
+
+import java.io.IOException;
+import java.lang.reflect.Field;
+import java.net.InetSocketAddress;
+import java.net.Proxy;
+import java.net.ProxySelector;
+import java.net.SocketAddress;
+import java.net.URI;
+import java.util.List;
+import java.util.Optional;
+
+import javax.net.ssl.HostnameVerifier;
+
 import org.apache.commons.lang3.reflect.FieldUtils;
-import org.apache.http.*;
+import org.apache.http.Header;
+import org.apache.http.HeaderIterator;
+import org.apache.http.HttpHeaders;
+import org.apache.http.HttpHost;
+import org.apache.http.HttpRequest;
+import org.apache.http.HttpResponse;
+import org.apache.http.ProtocolException;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.Credentials;
 import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.CredentialsProvider;
 import org.apache.http.client.HttpRequestRetryHandler;
+import org.apache.http.client.RedirectStrategy;
 import org.apache.http.client.config.CookieSpecs;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.HttpGet;
+import org.apache.http.client.methods.HttpUriRequest;
 import org.apache.http.config.Registry;
 import org.apache.http.config.RegistryBuilder;
 import org.apache.http.config.SocketConfig;
 import org.apache.http.conn.DnsResolver;
-import org.apache.http.conn.routing.HttpRoutePlanner;
 import org.apache.http.conn.routing.HttpRoute;
+import org.apache.http.conn.routing.HttpRoutePlanner;
 import org.apache.http.conn.socket.ConnectionSocketFactory;
 import org.apache.http.conn.socket.PlainConnectionSocketFactory;
 import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
@@ -41,23 +60,45 @@ import org.apache.http.message.BasicListHeaderIterator;
 import org.apache.http.protocol.BasicHttpContext;
 import org.apache.http.protocol.HTTP;
 import org.apache.http.protocol.HttpContext;
+import org.apache.http.protocol.HttpProcessor;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
-import java.net.ProxySelector;
-import java.net.Proxy;
-import java.net.URI;
-import java.net.SocketAddress;
-import java.net.InetSocketAddress;
+import org.mockito.ArgumentCaptor;
 
-import java.io.IOException;
-import java.lang.reflect.Field;
-import java.util.List;
+import com.codahale.metrics.MetricRegistry;
+import com.codahale.metrics.httpclient.HttpClientMetricNameStrategies;
+import com.codahale.metrics.httpclient.InstrumentedHttpClientConnectionManager;
+import com.codahale.metrics.httpclient.InstrumentedHttpRequestExecutor;
+import com.google.common.collect.ImmutableList;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.*;
-import static org.mockito.MockitoAnnotations.initMocks;
+import io.dropwizard.client.proxy.AuthConfiguration;
+import io.dropwizard.client.proxy.ProxyConfiguration;
+import io.dropwizard.client.ssl.TlsConfiguration;
+import io.dropwizard.lifecycle.Managed;
+import io.dropwizard.lifecycle.setup.LifecycleEnvironment;
+import io.dropwizard.setup.Environment;
+import io.dropwizard.util.Duration;
+
 
 public class HttpClientBuilderTest {
+    static class CustomBuilder extends HttpClientBuilder {
+        public boolean customized;
+
+        public CustomBuilder(MetricRegistry metricRegistry) {
+            super(metricRegistry);
+            customized = false;
+        }
+
+        @Override
+        protected org.apache.http.impl.client.HttpClientBuilder customizeBuilder(
+            org.apache.http.impl.client.HttpClientBuilder builder
+        ) {
+            customized = true;
+            return builder;
+        }
+    }
+
     private final Class<?> httpClientBuilderClass;
     private final Class<?> httpClientClass;
     private final Registry<ConnectionSocketFactory> registry = RegistryBuilder.<ConnectionSocketFactory>create()
@@ -81,8 +122,12 @@ public class HttpClientBuilderTest {
         builder = new HttpClientBuilder(metricRegistry);
         connectionManager = spy(new InstrumentedHttpClientConnectionManager(metricRegistry, registry));
         apacheBuilder = org.apache.http.impl.client.HttpClientBuilder.create();
-
         initMocks(this);
+    }
+
+    @After
+    public void validate() {
+        validateMockitoUsage();
     }
 
     @Test
@@ -143,6 +188,88 @@ public class HttpClientBuilderTest {
         assertThat(dnsResolverField.get(connectOperator)).isInstanceOf(SystemDefaultDnsResolver.class);
     }
 
+    @Test
+    public void canUseACustomHostnameVerifierWhenTlsConfigurationNotSpecified() throws Exception {
+        final HostnameVerifier customVerifier = (s, sslSession) -> false;
+
+        final Registry<ConnectionSocketFactory> configuredRegistry;
+        configuredRegistry = builder.using(customVerifier).createConfiguredRegistry();
+        assertThat(configuredRegistry).isNotNull();
+
+        final SSLConnectionSocketFactory socketFactory =
+                (SSLConnectionSocketFactory) configuredRegistry.lookup("https");
+        assertThat(socketFactory).isNotNull();
+
+        final Field hostnameVerifierField =
+                FieldUtils.getField(SSLConnectionSocketFactory.class, "hostnameVerifier", true);
+        assertThat(hostnameVerifierField.get(socketFactory)).isSameAs(customVerifier);
+    }
+
+    @Test
+    public void canUseACustomHostnameVerifierWhenTlsConfigurationSpecified() throws Exception {
+        final TlsConfiguration tlsConfiguration = new TlsConfiguration();
+        tlsConfiguration.setVerifyHostname(true);
+        configuration.setTlsConfiguration(tlsConfiguration);
+
+        final HostnameVerifier customVerifier = (s, sslSession) -> false;
+
+        final Registry<ConnectionSocketFactory> configuredRegistry;
+        configuredRegistry = builder.using(configuration).using(customVerifier).createConfiguredRegistry();
+        assertThat(configuredRegistry).isNotNull();
+
+        final SSLConnectionSocketFactory socketFactory =
+                (SSLConnectionSocketFactory) configuredRegistry.lookup("https");
+        assertThat(socketFactory).isNotNull();
+
+        final Field hostnameVerifierField =
+                FieldUtils.getField(SSLConnectionSocketFactory.class, "hostnameVerifier", true);
+        assertThat(hostnameVerifierField.get(socketFactory)).isSameAs(customVerifier);
+    }
+
+    @Test
+    public void canUseASystemHostnameVerifierByDefaultWhenTlsConfigurationNotSpecified() throws Exception {
+        final Registry<ConnectionSocketFactory> configuredRegistry;
+        configuredRegistry = builder.createConfiguredRegistry();
+        assertThat(configuredRegistry).isNotNull();
+
+        final SSLConnectionSocketFactory socketFactory =
+                (SSLConnectionSocketFactory) configuredRegistry.lookup("https");
+        assertThat(socketFactory).isNotNull();
+
+        final Field hostnameVerifierField =
+                FieldUtils.getField(SSLConnectionSocketFactory.class, "hostnameVerifier", true);
+        assertThat(hostnameVerifierField.get(socketFactory)).isInstanceOf(HostnameVerifier.class);
+    }
+
+    @Test
+    public void canUseASystemHostnameVerifierByDefaultWhenTlsConfigurationSpecified() throws Exception {
+        final TlsConfiguration tlsConfiguration = new TlsConfiguration();
+        tlsConfiguration.setVerifyHostname(true);
+        configuration.setTlsConfiguration(tlsConfiguration);
+
+        final Registry<ConnectionSocketFactory> configuredRegistry;
+        configuredRegistry = builder.using(configuration).createConfiguredRegistry();
+        assertThat(configuredRegistry).isNotNull();
+
+        final SSLConnectionSocketFactory socketFactory =
+                (SSLConnectionSocketFactory) configuredRegistry.lookup("https");
+        assertThat(socketFactory).isNotNull();
+
+        final Field hostnameVerifierField =
+                FieldUtils.getField(SSLConnectionSocketFactory.class, "hostnameVerifier", true);
+        assertThat(hostnameVerifierField.get(socketFactory)).isInstanceOf(HostnameVerifier.class);
+    }
+
+    @Test
+    public void createClientCanPassCustomVerifierToApacheBuilder() throws Exception {
+        final HostnameVerifier customVerifier = (s, sslSession) -> false;
+
+        assertThat(builder.using(customVerifier).createClient(apacheBuilder, connectionManager, "test")).isNotNull();
+
+        final Field hostnameVerifierField =
+                FieldUtils.getField(org.apache.http.impl.client.HttpClientBuilder.class, "hostnameVerifier", true);
+        assertThat(hostnameVerifierField.get(apacheBuilder)).isSameAs(customVerifier);
+    }
 
     @Test
     public void doesNotReuseConnectionsIfKeepAliveIsZero() throws Exception {
@@ -187,7 +314,7 @@ public class HttpClientBuilderTest {
         final HttpContext context = mock(HttpContext.class);
         final HttpResponse response = mock(HttpResponse.class);
         final HeaderIterator iterator = new BasicListHeaderIterator(
-                ImmutableList.<Header>of(new BasicHeader(HttpHeaders.CONNECTION, "timeout=50")),
+                ImmutableList.of(new BasicHeader(HttpHeaders.CONNECTION, "timeout=50")),
                 HttpHeaders.CONNECTION
         );
         when(response.headerIterator(HTTP.CONN_KEEP_ALIVE)).thenReturn(iterator);
@@ -250,6 +377,9 @@ public class HttpClientBuilderTest {
     public void disablesStaleConnectionCheck() throws Exception {
         assertThat(builder.using(configuration).createClient(apacheBuilder, connectionManager, "test")).isNotNull();
 
+        // It is fine to use the isStaleConnectionCheckEnabled deprecated API, as we are ensuring
+        // that the builder creates a client that does not check for stale connections on each
+        // request, which adds significant overhead.
         assertThat(((RequestConfig) spyHttpClientBuilderField("defaultRequestConfig", apacheBuilder))
                 .isStaleConnectionCheckEnabled()).isFalse();
     }
@@ -287,12 +417,7 @@ public class HttpClientBuilderTest {
 
     @Test
     public void usesACustomHttpRequestRetryHandler() throws Exception {
-        final HttpRequestRetryHandler customHandler = new HttpRequestRetryHandler() {
-            @Override
-            public boolean retryRequest(IOException exception, int executionCount, HttpContext context) {
-                return false;
-            }
-        };
+        final HttpRequestRetryHandler customHandler = (exception, executionCount, context) -> false;
 
         configuration.setRetries(1);
         assertThat(builder.using(configuration).using(customHandler)
@@ -400,6 +525,18 @@ public class HttpClientBuilderTest {
     }
 
     @Test
+    public void setValidateAfterInactivityPeriodFromConfiguration() throws Exception {
+        int validateAfterInactivityPeriod = 50000;
+        configuration.setValidateAfterInactivityPeriod(Duration.milliseconds(validateAfterInactivityPeriod));
+        final ConfiguredCloseableHttpClient client = builder.using(configuration)
+                .createClient(apacheBuilder, builder.configureConnectionManager(connectionManager), "test");
+
+        assertThat(client).isNotNull();
+        assertThat(spyHttpClientBuilderField("connManager", apacheBuilder)).isSameAs(connectionManager);
+        verify(connectionManager).setValidateAfterInactivity(validateAfterInactivityPeriod);
+    }
+
+    @Test
     public void usesACustomHttpClientMetricNameStrategy() throws Exception {
         assertThat(builder.using(HttpClientMetricNameStrategies.HOST_AND_METHOD)
                 .createClient(apacheBuilder, connectionManager, "test"))
@@ -426,6 +563,106 @@ public class HttpClientBuilderTest {
         assertThat(client).isNotNull();
 
         assertThat(spyHttpClientField("defaultConfig", client.getClient())).isEqualTo(client.getDefaultRequestConfig());
+    }
+
+    @Test
+    public void disablesContentCompression() throws Exception {
+        ConfiguredCloseableHttpClient client = builder
+                .disableContentCompression(true)
+                .createClient(apacheBuilder, connectionManager, "test");
+        assertThat(client).isNotNull();
+
+        final Boolean contentCompressionDisabled = (Boolean) FieldUtils
+                .getField(httpClientBuilderClass, "contentCompressionDisabled", true)
+                .get(apacheBuilder);
+        assertThat(contentCompressionDisabled).isTrue();
+    }
+
+    @Test
+    public void managedByEnvironment() throws Exception {
+        final Environment environment = mock(Environment.class);
+        when(environment.getName()).thenReturn("test-env");
+        when(environment.metrics()).thenReturn(new MetricRegistry());
+
+        final LifecycleEnvironment lifecycle = mock(LifecycleEnvironment.class);
+        when(environment.lifecycle()).thenReturn(lifecycle);
+
+        final CloseableHttpClient httpClient = mock(CloseableHttpClient.class);
+        HttpClientBuilder httpClientBuilder = spy(new HttpClientBuilder(environment));
+        when(httpClientBuilder.buildWithDefaultRequestConfiguration("test-apache-client"))
+                .thenReturn(new ConfiguredCloseableHttpClient(httpClient, RequestConfig.DEFAULT));
+        assertThat(httpClientBuilder.build("test-apache-client")).isSameAs(httpClient);
+
+        // Verify that we registered the managed object
+        final ArgumentCaptor<Managed> argumentCaptor = ArgumentCaptor.forClass(Managed.class);
+        verify(lifecycle).manage(argumentCaptor.capture());
+
+        // Verify that the managed object actually stops the HTTP client
+        final Managed managed = argumentCaptor.getValue();
+        managed.stop();
+        verify(httpClient).close();
+    }
+
+    @Test
+    public void usesACustomRedirectStrategy() throws Exception {
+        RedirectStrategy neverFollowRedirectStrategy = new RedirectStrategy() {
+            @Override
+            public boolean isRedirected(HttpRequest httpRequest,
+                                        HttpResponse httpResponse,
+                                        HttpContext httpContext) throws ProtocolException {
+                return false;
+            }
+
+            @Override
+            public HttpUriRequest getRedirect(HttpRequest httpRequest,
+                                              HttpResponse httpResponse,
+                                              HttpContext httpContext) throws ProtocolException {
+                return null;
+            }
+        };
+        ConfiguredCloseableHttpClient client = builder.using(neverFollowRedirectStrategy)
+                                                      .createClient(apacheBuilder, connectionManager, "test");
+        assertThat(client).isNotNull();
+        assertThat(spyHttpClientBuilderField("redirectStrategy", apacheBuilder)).isSameAs(neverFollowRedirectStrategy);
+    }
+
+    @Test
+    public void usesDefaultHeaders() throws Exception {
+        final ConfiguredCloseableHttpClient client =
+                builder.using(ImmutableList.of(new BasicHeader(HttpHeaders.ACCEPT_LANGUAGE, "de")))
+                        .createClient(apacheBuilder, connectionManager, "test");
+        assertThat(client).isNotNull();
+
+        @SuppressWarnings("unchecked")
+        List<? extends Header> defaultHeaders = (List<? extends Header>) FieldUtils
+                .getField(httpClientBuilderClass, "defaultHeaders", true)
+                .get(apacheBuilder);
+
+        assertThat(defaultHeaders).hasSize(1);
+        final Header header = defaultHeaders.get(0);
+        assertThat(header.getName()).isEqualTo(HttpHeaders.ACCEPT_LANGUAGE);
+        assertThat(header.getValue()).isEqualTo("de");
+    }
+
+    @Test
+    public void usesHttpProcessor() throws Exception {
+        HttpProcessor httpProcessor = mock(HttpProcessor.class);
+        final ConfiguredCloseableHttpClient client =
+            builder.using(httpProcessor)
+                .createClient(apacheBuilder, connectionManager, "test");
+        assertThat(client).isNotNull();
+        assertThat(FieldUtils.getField(httpClientBuilderClass,
+            "httpprocessor", true)
+            .get(apacheBuilder))
+            .isSameAs(httpProcessor);
+    }
+
+    @Test
+    public void allowsCustomBuilderConfiguration() throws Exception {
+        CustomBuilder builder = new CustomBuilder(new MetricRegistry());
+        assertThat(builder.customized).isFalse();
+        ConfiguredCloseableHttpClient client = builder.createClient(apacheBuilder, connectionManager, "test");
+        assertThat(builder.customized).isTrue();
     }
 
     private Object spyHttpClientBuilderField(final String fieldName, final Object obj) throws Exception {

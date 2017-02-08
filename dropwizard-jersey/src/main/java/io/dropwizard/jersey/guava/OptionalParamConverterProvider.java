@@ -1,6 +1,5 @@
 package io.dropwizard.jersey.guava;
 
-import com.google.common.base.Function;
 import com.google.common.base.Optional;
 import org.glassfish.hk2.api.ServiceLocator;
 import org.glassfish.jersey.internal.inject.Providers;
@@ -14,7 +13,6 @@ import javax.ws.rs.ext.ParamConverterProvider;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Type;
 import java.util.List;
-import java.util.Set;
 
 @Singleton
 public class OptionalParamConverterProvider implements ParamConverterProvider {
@@ -42,30 +40,24 @@ public class OptionalParamConverterProvider implements ParamConverterProvider {
                     }
 
                     @Override
-                    public String toString(final T value) throws IllegalArgumentException {
+                    public String toString(final T value) {
                         return value.toString();
                     }
                 };
             }
 
-            final Set<ParamConverterProvider> converterProviders = Providers.getProviders(locator, ParamConverterProvider.class);
-            for (ParamConverterProvider provider : converterProviders) {
+            for (ParamConverterProvider provider : Providers.getProviders(locator, ParamConverterProvider.class)) {
                 final ParamConverter<?> converter = provider.getConverter(ctp.rawClass(), ctp.type(), annotations);
                 if (converter != null) {
                     return new ParamConverter<T>() {
                         @Override
                         public T fromString(final String value) {
-                            return rawType.cast(Optional.fromNullable(value)
-                                    .transform(new Function<String, Object>() {
-                                        @Override
-                                        public Object apply(final String s) {
-                                            return converter.fromString(value);
-                                        }
-                                    }));
+                            final Object convertedValue = value == null ? null : converter.fromString(value);
+                            return rawType.cast(Optional.fromNullable(convertedValue));
                         }
 
                         @Override
-                        public String toString(final T value) throws IllegalArgumentException {
+                        public String toString(final T value) {
                             return value.toString();
                         }
                     };

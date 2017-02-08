@@ -3,8 +3,7 @@ package io.dropwizard.db;
 import com.codahale.metrics.MetricRegistry;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.google.common.base.Optional;
-import com.google.common.collect.Maps;
+import com.google.common.primitives.Ints;
 import io.dropwizard.util.Duration;
 import io.dropwizard.validation.MinDuration;
 import io.dropwizard.validation.ValidationMethod;
@@ -14,7 +13,10 @@ import javax.validation.constraints.Max;
 import javax.validation.constraints.Min;
 import javax.validation.constraints.NotNull;
 import java.sql.Connection;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 
@@ -40,13 +42,30 @@ import java.util.concurrent.TimeUnit;
  *     </tr>
  *     <tr>
  *         <td>{@code user}</td>
- *         <td><b>REQUIRED</b></td>
+ *         <td><b>none</b></td>
  *         <td>The username used to connect to the server.</td>
  *     </tr>
  *     <tr>
  *         <td>{@code password}</td>
  *         <td>none</td>
  *         <td>The password used to connect to the server.</td>
+ *     </tr>
+ *     <tr>
+ *         <td>{@code removeAbandoned}</td>
+ *         <td>{@code false}</td>
+ *         <td>
+ *             Remove abandoned connections if they exceed the {@code removeAbandonedTimeout}.
+ *             If set to {@code true} a connection is considered abandoned and eligible for removal if it has
+ *             been in use longer than the {@code removeAbandonedTimeout} and the condition for
+ *             {@code abandonWhenPercentageFull} is met.
+ *         </td>
+ *     </tr>
+ *     <tr>
+ *         <td>{@code removeAbandonedTimeout}</td>
+ *         <td>60 seconds</td>
+ *         <td>
+ *             The time before a database connection can be considered abandoned.
+ *         </td>
  *     </tr>
  *     <tr>
  *         <td>{@code abandonWhenPercentageFull}</td>
@@ -73,6 +92,14 @@ import java.util.concurrent.TimeUnit;
  *         <td>{@code false}</td>
  *         <td>
  *             Set to true if you want the connection pool to commit any pending transaction when a
+ *             connection is returned.
+ *         </td>
+ *     </tr>
+ *     <tr>
+ *         <td>{@code rollbackOnReturn}</td>
+ *         <td>{@code false}</td>
+ *         <td>
+ *             Set to true if you want the connection pool to rollback any pending transaction when a
  *             connection is returned.
  *         </td>
  *     </tr>
@@ -116,7 +143,9 @@ import java.util.concurrent.TimeUnit;
  *         <td>{@code initialSize}</td>
  *         <td>10</td>
  *         <td>
- *             The initial size of the connection pool.
+ *             The initial size of the connection pool. May be zero, which will allow you to start
+ *             the connection pool without requiring the DB to be up. In the latter case the {@link #minSize}
+ *             must also be set to zero.
  *         </td>
  *     </tr>
  *     <tr>
@@ -248,9 +277,17 @@ import java.util.concurrent.TimeUnit;
  *             To avoid excess validation, only run validation once every interval.
  *         </td>
  *     </tr>
+ *     <tr>
+ *         <td>{@code validatorClassName}</td>
+ *         <td>(none)</td>
+ *         <td>
+ *             Name of a class of a custom {@link org.apache.tomcat.jdbc.pool.Validator}
+ *             implementation, which will be used for validating connections.
+ *         </td>
+ *     </tr>
  * </table>
  */
-public class DataSourceFactory {
+public class DataSourceFactory implements PooledDataSourceFactory {
     @SuppressWarnings("UnusedDeclaration")
     public enum TransactionIsolation {
         NONE(Connection.TRANSACTION_NONE),
@@ -262,7 +299,7 @@ public class DataSourceFactory {
 
         private final int value;
 
-        private TransactionIsolation(int value) {
+        TransactionIsolation(int value) {
             this.value = value;
         }
 
@@ -282,20 +319,21 @@ public class DataSourceFactory {
 
     private boolean commitOnReturn = false;
 
+    private boolean rollbackOnReturn = false;
+
     private Boolean autoCommitByDefault;
 
     private Boolean readOnlyByDefault;
 
-    @NotNull
     private String user = null;
 
-    private String password = "";
+    private String password = null;
 
     @NotNull
     private String url = null;
 
     @NotNull
-    private Map<String, String> properties = Maps.newLinkedHashMap();
+    private Map<String, String> properties = new LinkedHashMap<>();
 
     private String defaultCatalog;
 
@@ -304,10 +342,10 @@ public class DataSourceFactory {
 
     private boolean useFairQueue = true;
 
-    @Min(1)
+    @Min(0)
     private int initialSize = 10;
 
-    @Min(1)
+    @Min(0)
     private int minSize = 10;
 
     @Min(1)
@@ -354,7 +392,16 @@ public class DataSourceFactory {
     @MinDuration(1)
     private Duration validationInterval = Duration.seconds(30);
 
+    private Optional<String> validatorClassName = Optional.empty();
+
+    private boolean removeAbandoned = false;
+
+    @NotNull
+    @MinDuration(1)
+    private Duration removeAbandonedTimeout = Duration.seconds(60L);
+
     @JsonProperty
+    @Override
     public boolean isAutoCommentsEnabled() {
         return autoCommentsEnabled;
     }
@@ -365,6 +412,7 @@ public class DataSourceFactory {
     }
 
     @JsonProperty
+    @Override
     public String getDriverClass() {
         return driverClass;
     }
@@ -395,6 +443,7 @@ public class DataSourceFactory {
     }
 
     @JsonProperty
+    @Override
     public String getUrl() {
         return url;
     }
@@ -405,6 +454,7 @@ public class DataSourceFactory {
     }
 
     @JsonProperty
+    @Override
     public Map<String, String> getProperties() {
         return properties;
     }
@@ -424,9 +474,17 @@ public class DataSourceFactory {
         this.maxWaitForConnection = maxWaitForConnection;
     }
 
+    @Override
     @JsonProperty
     public String getValidationQuery() {
         return validationQuery;
+    }
+
+    @Override
+    @Deprecated
+    @JsonIgnore
+    public String getHealthCheckValidationQuery() {
+        return getValidationQuery();
     }
 
     @JsonProperty
@@ -473,7 +531,7 @@ public class DataSourceFactory {
     @Deprecated
     @JsonProperty
     public void setDefaultReadOnly(boolean defaultReadOnly) {
-        readOnlyByDefault = Boolean.valueOf(defaultReadOnly);
+        readOnlyByDefault = defaultReadOnly;
     }
 
     @JsonIgnore
@@ -520,8 +578,18 @@ public class DataSourceFactory {
     }
 
     @JsonProperty
+    public boolean getRollbackOnReturn() {
+        return rollbackOnReturn;
+    }
+
+    @JsonProperty
     public void setCommitOnReturn(boolean commitOnReturn) {
         this.commitOnReturn = commitOnReturn;
+    }
+
+    @JsonProperty
+    public void setRollbackOnReturn(boolean rollbackOnReturn) {
+        this.rollbackOnReturn = rollbackOnReturn;
     }
 
     @JsonProperty
@@ -616,7 +684,7 @@ public class DataSourceFactory {
 
     @JsonProperty
     public Optional<Duration> getMaxConnectionAge() {
-        return Optional.fromNullable(maxConnectionAge);
+        return Optional.ofNullable(maxConnectionAge);
     }
 
     @JsonProperty
@@ -684,9 +752,27 @@ public class DataSourceFactory {
         this.validationInterval = validationInterval;
     }
 
+    @Override
     @JsonProperty
     public Optional<Duration> getValidationQueryTimeout() {
-        return Optional.fromNullable(validationQueryTimeout);
+        return Optional.ofNullable(validationQueryTimeout);
+    }
+
+    @JsonProperty
+    public Optional<String> getValidatorClassName() {
+        return validatorClassName;
+    }
+
+    @JsonProperty
+    public void setValidatorClassName(Optional<String> validatorClassName) {
+        this.validatorClassName = validatorClassName;
+    }
+
+    @Override
+    @Deprecated
+    @JsonIgnore
+    public Optional<Duration> getHealthCheckValidationTimeout() {
+        return getValidationQueryTimeout();
     }
 
     @JsonProperty
@@ -694,6 +780,34 @@ public class DataSourceFactory {
         this.validationQueryTimeout = validationQueryTimeout;
     }
 
+    @JsonProperty
+    public boolean isRemoveAbandoned() {
+        return removeAbandoned;
+    }
+
+    @JsonProperty
+    public void setRemoveAbandoned(boolean removeAbandoned) {
+        this.removeAbandoned = removeAbandoned;
+    }
+
+    @JsonProperty
+    public Duration getRemoveAbandonedTimeout() {
+        return removeAbandonedTimeout;
+    }
+
+    @JsonProperty
+    public void setRemoveAbandonedTimeout(Duration removeAbandonedTimeout) {
+        this.removeAbandonedTimeout = Objects.requireNonNull(removeAbandonedTimeout);
+    }
+
+    @Override
+    public void asSingleConnectionPool() {
+        minSize = 1;
+        maxSize = 1;
+        initialSize = 1;
+    }
+
+    @Override
     public ManagedDataSource build(MetricRegistry metricRegistry, String name) {
         final Properties properties = new Properties();
         for (Map.Entry<String, String> property : this.properties.entrySet()) {
@@ -704,6 +818,7 @@ public class DataSourceFactory {
         poolConfig.setAbandonWhenPercentageFull(abandonWhenPercentageFull);
         poolConfig.setAlternateUsernameAllowed(alternateUsernamesAllowed);
         poolConfig.setCommitOnReturn(commitOnReturn);
+        poolConfig.setRollbackOnReturn(rollbackOnReturn);
         poolConfig.setDbProperties(properties);
         poolConfig.setDefaultAutoCommit(autoCommitByDefault);
         poolConfig.setDefaultCatalog(defaultCatalog);
@@ -728,7 +843,10 @@ public class DataSourceFactory {
         poolConfig.setName(name);
         poolConfig.setUrl(url);
         poolConfig.setUsername(user);
-        poolConfig.setPassword(password);
+        poolConfig.setPassword(user != null && password == null ? "" : password);
+        poolConfig.setRemoveAbandoned(removeAbandoned);
+        poolConfig.setRemoveAbandonedTimeout(Ints.saturatedCast(removeAbandonedTimeout.toSeconds()));
+
         poolConfig.setTestWhileIdle(checkConnectionWhileIdle);
         poolConfig.setValidationQuery(validationQuery);
         poolConfig.setTestOnBorrow(checkConnectionOnBorrow);
@@ -740,6 +858,7 @@ public class DataSourceFactory {
         if (getValidationQueryTimeout().isPresent()) {
             poolConfig.setValidationQueryTimeout((int) validationQueryTimeout.toSeconds());
         }
+        validatorClassName.ifPresent(poolConfig::setValidatorClassName);
 
         return new ManagedPooledDataSource(poolConfig, metricRegistry);
     }

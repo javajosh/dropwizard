@@ -34,6 +34,11 @@ To create a :ref:`managed <man-core-managed>`, instrumented ``HttpClient`` insta
         public HttpClientConfiguration getHttpClientConfiguration() {
             return httpClient;
         }
+
+        @JsonProperty("httpClient")
+        public void setHttpClientConfiguration(HttpClientConfiguration httpClient) {
+            this.httpClient = httpClient;
+        }
     }
 
 Then, in your application's ``run`` method, create a new ``HttpClientBuilder``:
@@ -44,7 +49,7 @@ Then, in your application's ``run`` method, create a new ``HttpClientBuilder``:
     public void run(ExampleConfiguration config,
                     Environment environment) {
         final HttpClient httpClient = new HttpClientBuilder(environment).using(config.getHttpClientConfiguration())
-                                                                        .build();
+                                                                        .build(getName());
         environment.jersey().register(new ExternalServiceResource(httpClient));
     }
 
@@ -119,7 +124,7 @@ If HttpClient_ is too low-level for you, Dropwizard also supports Jersey's `Clie
 Jersey's ``Client`` allows you to use all of the server-side media type support that your service
 uses to, for example, deserialize ``application/json`` request entities as POJOs.
 
-.. _Client API: https://jersey.java.net/documentation/1.18/client-api.html
+.. _Client API: https://jersey.java.net/documentation/2.24/client.html
 
 To create a :ref:`managed <man-core-managed>`, instrumented ``JerseyClient`` instance, your
 :ref:`configuration class <man-core-configuration>` needs an :ref:`jersey client configuration <man-configuration-clients-jersey>` instance:
@@ -129,11 +134,11 @@ To create a :ref:`managed <man-core-managed>`, instrumented ``JerseyClient`` ins
     public class ExampleConfiguration extends Configuration {
         @Valid
         @NotNull
-        private JerseyClientConfiguration httpClient = new JerseyClientConfiguration();
+        private JerseyClientConfiguration jerseyClient = new JerseyClientConfiguration();
 
-        @JsonProperty("httpClient")
+        @JsonProperty("jerseyClient")
         public JerseyClientConfiguration getJerseyClientConfiguration() {
-            return httpClient;
+            return jerseyClient;
         }
     }
 
@@ -146,7 +151,7 @@ Then, in your service's ``run`` method, create a new ``JerseyClientBuilder``:
                     Environment environment) {
 
         final Client client = new JerseyClientBuilder(environment).using(config.getJerseyClientConfiguration())
-                                                                  .build(getName());                                                       
+                                                                  .build(getName());
         environment.jersey().register(new ExternalServiceResource(client));
     }
 
@@ -159,8 +164,8 @@ Dropwizard, the default is 500 milliseconds.
 
 There are a couple of ways to change this behavior. The recommended way is to modify the
 :ref:`YAML configuration <man-configuration-clients-http>`. Alternatively, set the properties on
-the ``JerseyClientConfiguration``, which will take affect for all built clients. On a per client
-basis, the configuration can be changed through utilizing the ``property`` method and, in this case,
+the ``JerseyClientConfiguration``, which will take effect for all built clients. On a per client
+basis, the configuration can be changed by utilizing the ``property`` method and, in this case,
 the `Jersey Client Properties`_ can be used.
 
 .. warning::
@@ -173,4 +178,41 @@ the `Jersey Client Properties`_ can be used.
     ``HttpClientBuilder``, so the Jersey properties are ignored.
 
 .. _Jersey Client Configuration: https://jersey.java.net/documentation/latest/appendix-properties.html#appendix-properties-client
-.. _Jersey Client Properties: https://jersey.java.net/apidocs/2.17/jersey/org/glassfish/jersey/client/ClientProperties.html
+.. _Jersey Client Properties: https://jersey.java.net/apidocs/2.24/jersey/org/glassfish/jersey/client/ClientProperties.html
+
+.. _man-client-jersey-rx-usage:
+
+Rx Usage
+--------
+
+To increase the ergonomics of asynchronous client requests, Jersey allows creation of `rx-clients`_.
+You can instruct Dropwizard to create such a client:
+
+.. code-block:: java
+
+    @Override
+    public void run(ExampleConfiguration config,
+                    Environment environment) {
+
+        final RxClient<RxCompletionStageInvoker> client =
+            new JerseyClientBuilder(environment)
+                .using(config.getJerseyClientConfiguration())
+                .buildRx(getName(), RxCompletionStageInvoker.class);
+        environment.jersey().register(new ExternalServiceResource(client));
+    }
+
+``RxCompletionStageInvoker.class`` is the Java 8 implementation and can be added to the pom:
+
+.. code-block:: xml
+
+    <dependency>
+        <groupId>org.glassfish.jersey.ext.rx</groupId>
+        <artifactId>jersey-rx-client-java8</artifactId>
+    </dependency>
+
+Alternatively, there are RxJava, Guava, and JSR-166e implementations.
+
+By allowing Dropwizard to create the rx-client, the same thread pool that is utilized by traditional
+synchronous and asynchronous requests, is used for rx requests.
+
+.. _rx-clients: https://jersey.java.net/documentation/2.24/rx-client.html

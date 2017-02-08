@@ -2,8 +2,10 @@ package io.dropwizard.views.mustache;
 
 import com.codahale.metrics.MetricRegistry;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.dropwizard.logging.BootstrapLogging;
 import io.dropwizard.views.ViewMessageBodyWriter;
+import io.dropwizard.views.ViewRenderExceptionMapper;
 import io.dropwizard.views.ViewRenderer;
 import org.glassfish.jersey.server.ResourceConfig;
 import org.glassfish.jersey.test.JerseyTest;
@@ -45,6 +47,12 @@ public class MustacheViewRendererTest extends JerseyTest {
         public BadView showBad() {
             return new BadView();
         }
+
+        @GET
+        @Path("/error")
+        public ErrorView showError() {
+            return new ErrorView();
+        }
     }
 
     @Override
@@ -53,6 +61,7 @@ public class MustacheViewRendererTest extends JerseyTest {
         ResourceConfig config = new ResourceConfig();
         final ViewRenderer renderer = new MustacheViewRenderer();
         config.register(new ViewMessageBodyWriter(new MetricRegistry(), ImmutableList.of(renderer)));
+        config.register(new ViewRenderExceptionMapper());
         config.register(new ExampleResource());
         return config;
     }
@@ -60,15 +69,13 @@ public class MustacheViewRendererTest extends JerseyTest {
     @Test
     public void rendersViewsWithAbsoluteTemplatePaths() throws Exception {
         final String response = target("/test/absolute").request().get(String.class);
-        assertThat(response)
-                .isEqualTo("Woop woop. yay" + System.lineSeparator());
+        assertThat(response).isEqualTo("Woop woop. yay\n");
     }
 
     @Test
     public void rendersViewsWithRelativeTemplatePaths() throws Exception {
         final String response = target("/test/relative").request().get(String.class);
-        assertThat(response)
-                .isEqualTo("Ok." + System.lineSeparator());
+        assertThat(response).isEqualTo("Ok.\n");
     }
 
     @Test
@@ -81,7 +88,35 @@ public class MustacheViewRendererTest extends JerseyTest {
                     .isEqualTo(500);
 
             assertThat(e.getResponse().readEntity(String.class))
-                    .isEqualTo("<html><head><title>Missing Template</title></head><body><h1>Missing Template</h1><p>Template \"/woo-oo-ahh.txt.mustache\" not found.</p></body></html>");
+                    .isEqualTo(ViewRenderExceptionMapper.TEMPLATE_ERROR_MSG);
         }
+    }
+
+    @Test
+    public void returnsA500ForViewsThatCantCompile() throws Exception {
+        try {
+            target("/test/error").request().get(String.class);
+            failBecauseExceptionWasNotThrown(WebApplicationException.class);
+        } catch (WebApplicationException e) {
+            assertThat(e.getResponse().getStatus())
+                    .isEqualTo(500);
+
+            assertThat(e.getResponse().readEntity(String.class))
+                .isEqualTo(ViewRenderExceptionMapper.TEMPLATE_ERROR_MSG);
+        }
+    }
+
+    @Test
+    public void cacheByDefault() {
+        MustacheViewRenderer mustacheViewRenderer = new MustacheViewRenderer();
+        mustacheViewRenderer.configure(ImmutableMap.of());
+        assertThat(mustacheViewRenderer.isUseCache()).isTrue();
+    }
+
+    @Test
+    public void canDisableCache() {
+        MustacheViewRenderer mustacheViewRenderer = new MustacheViewRenderer();
+        mustacheViewRenderer.configure(ImmutableMap.of("cache", "false"));
+        assertThat(mustacheViewRenderer.isUseCache()).isFalse();
     }
 }

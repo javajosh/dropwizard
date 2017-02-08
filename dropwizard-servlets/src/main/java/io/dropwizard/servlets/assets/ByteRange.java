@@ -1,7 +1,7 @@
 package io.dropwizard.servlets.assets;
 
 import javax.annotation.concurrent.Immutable;
-import com.google.common.base.Objects;
+import java.util.Objects;
 
 @Immutable
 public final class ByteRange {
@@ -23,29 +23,28 @@ public final class ByteRange {
     }
 
     public static ByteRange parse(final String byteRange,
-            final int resourceLength) throws NumberFormatException {
+                                  final int resourceLength) {
         // missing separator
-        if (byteRange.indexOf("-") == -1) {
+        if (!byteRange.contains("-")) {
             final int start = Integer.parseInt(byteRange);
-            return new ByteRange(start, resourceLength-1);
+            return new ByteRange(start, resourceLength - 1);
         }
         // negative range
         if (byteRange.indexOf("-") == 0) {
             final int start = Integer.parseInt(byteRange);
-            return new ByteRange(resourceLength+start, resourceLength-1);
+            return new ByteRange(resourceLength + start, resourceLength - 1);
         }
         final String[] parts = byteRange.split("-");
         if (parts.length == 2) {
             final int start = Integer.parseInt(parts[0]);
             int end = Integer.parseInt(parts[1]);
             if (end > resourceLength) {
-                end = resourceLength-1;
+                end = resourceLength - 1;
             }
             return new ByteRange(start, end);
-        }
-        else {
+        } else {
             final int start = Integer.parseInt(parts[0]);
-            return new ByteRange(start, resourceLength-1);
+            return new ByteRange(start, resourceLength - 1);
         }
     }
 
@@ -59,12 +58,12 @@ public final class ByteRange {
         }
 
         final ByteRange other = (ByteRange) obj;
-        return Objects.equal(start, other.start) && Objects.equal(end, other.end);
+        return Objects.equals(start, other.start) && Objects.equals(end, other.end);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hashCode(start, end);
+        return Objects.hash(start, end);
     }
 
     @Override

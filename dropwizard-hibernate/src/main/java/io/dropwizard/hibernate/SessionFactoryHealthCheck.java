@@ -8,7 +8,6 @@ import org.hibernate.Session;
 import org.hibernate.SessionFactory;
 import org.hibernate.Transaction;
 
-import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 
 public class SessionFactoryHealthCheck extends HealthCheck {
@@ -29,7 +28,7 @@ public class SessionFactoryHealthCheck extends HealthCheck {
         this.validationQuery = validationQuery;
         this.timeBoundHealthCheck = new TimeBoundHealthCheck(executorService, duration);
     }
-    
+
 
     public SessionFactory getSessionFactory() {
         return sessionFactory;
@@ -41,26 +40,20 @@ public class SessionFactoryHealthCheck extends HealthCheck {
 
     @Override
     protected Result check() throws Exception {
-        return timeBoundHealthCheck.check(new Callable<Result>() {
-            @Override
-            public Result call() throws Exception {
-                final Session session = sessionFactory.openSession();
+        return timeBoundHealthCheck.check(() -> {
+            try (Session session = sessionFactory.openSession()) {
+                final Transaction txn = session.beginTransaction();
                 try {
-                    final Transaction txn = session.beginTransaction();
-                    try {
-                        session.createSQLQuery(validationQuery).list();
-                        txn.commit();
-                    } catch (Exception e) {
-                        if (txn.isActive()) {
-                            txn.rollback();
-                        }
-                        throw e;
+                    session.createSQLQuery(validationQuery).list();
+                    txn.commit();
+                } catch (Exception e) {
+                    if (txn.getStatus().canRollback()) {
+                        txn.rollback();
                     }
-                } finally {
-                    session.close();
+                    throw e;
                 }
-                return Result.healthy();
             }
+            return Result.healthy();
         });
     }
 }

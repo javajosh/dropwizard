@@ -1,6 +1,5 @@
 package io.dropwizard.validation.valuehandling;
 
-import com.google.common.base.Optional;
 import org.hibernate.validator.HibernateValidator;
 import org.hibernate.validator.valuehandling.UnwrapValidatedValue;
 import org.junit.Test;
@@ -10,18 +9,21 @@ import javax.validation.Validation;
 import javax.validation.Validator;
 import javax.validation.constraints.Min;
 import javax.validation.constraints.NotNull;
-
+import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+// Dropwizard used to supply its own Java 8 optional validator but since
+// Hibernate Validator 5.2, it's built in, so the class was removed but
+// the test class stays to ensure behavior remains
 public class OptionalValidatedValueUnwrapperTest {
 
     public static class Example {
 
         @Min(3)
         @UnwrapValidatedValue
-        public Optional<Integer> three = Optional.absent();
+        public Optional<Integer> three = Optional.empty();
 
         @NotNull
         @UnwrapValidatedValue
@@ -31,7 +33,6 @@ public class OptionalValidatedValueUnwrapperTest {
     private final Validator validator = Validation
             .byProvider(HibernateValidator.class)
             .configure()
-            .addValidatedValueHandler(new OptionalValidatedValueUnwrapper())
             .buildValidatorFactory()
             .getValidator();
 
@@ -51,14 +52,6 @@ public class OptionalValidatedValueUnwrapperTest {
     }
 
     @Test
-    public void succeedsWhenPresentButNull() {
-        Example example = new Example();
-        example.three = Optional.fromNullable(null);
-        Set<ConstraintViolation<Example>> violations = validator.validate(example);
-        assertThat(violations).isEmpty();
-    }
-
-    @Test
     public void succeedsWhenConstraintsMet() {
         Example example = new Example();
         example.three = Optional.of(10);
@@ -69,15 +62,7 @@ public class OptionalValidatedValueUnwrapperTest {
     @Test
     public void notNullFailsWhenAbsent() {
         Example example = new Example();
-        example.notNull = Optional.absent();
-        Set<ConstraintViolation<Example>> violations = validator.validate(example);
-        assertThat(violations).hasSize(1);
-    }
-
-    @Test
-    public void notNullFailsWhenPresentButNull() {
-        Example example = new Example();
-        example.notNull = Optional.fromNullable(null);
+        example.notNull = Optional.empty();
         Set<ConstraintViolation<Example>> violations = validator.validate(example);
         assertThat(violations).hasSize(1);
     }

@@ -39,14 +39,14 @@ public class ChainedAuthFilter<C, P extends Principal> extends AuthFilter<C, P> 
     public void filter(ContainerRequestContext containerRequestContext) throws IOException {
         WebApplicationException firstException = null;
         for (AuthFilter authFilter : handlers) {
-            SecurityContext securityContext = containerRequestContext.getSecurityContext();
+            final SecurityContext securityContext = containerRequestContext.getSecurityContext();
             try {
                 authFilter.filter(containerRequestContext);
                 if (securityContext != containerRequestContext.getSecurityContext()) {
                     return;
                 }
             } catch (WebApplicationException e) {
-                if(firstException == null) {
+                if (firstException == null) {
                     firstException = e;
                 }
             }

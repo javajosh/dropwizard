@@ -1,27 +1,26 @@
 package io.dropwizard.setup;
 
 import com.codahale.metrics.MetricRegistry;
+import com.codahale.metrics.SharedMetricRegistries;
 import com.codahale.metrics.health.HealthCheckRegistry;
+import com.codahale.metrics.health.SharedHealthCheckRegistries;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import io.dropwizard.jersey.DropwizardResourceConfig;
 import io.dropwizard.jersey.setup.JerseyContainerHolder;
 import io.dropwizard.jersey.setup.JerseyEnvironment;
+import io.dropwizard.jersey.setup.JerseyServletContainer;
 import io.dropwizard.jetty.MutableServletContextHandler;
 import io.dropwizard.jetty.setup.ServletEnvironment;
 import io.dropwizard.lifecycle.setup.LifecycleEnvironment;
-import org.glassfish.jersey.servlet.ServletContainer;
 
 import javax.servlet.Servlet;
 import javax.validation.Validator;
-
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 
-import static com.google.common.base.Preconditions.checkNotNull;
-
-// TODO: 5/15/13 <coda> -- add tests for Environment
+import static java.util.Objects.requireNonNull;
 
 /**
  * A Dropwizard application's environment.
@@ -44,7 +43,7 @@ public class Environment {
 
     private final MutableServletContextHandler adminContext;
     private final AdminEnvironment adminEnvironment;
-    
+
     private final ExecutorService healthCheckExecutorService;
 
     /**
@@ -57,11 +56,12 @@ public class Environment {
                        ObjectMapper objectMapper,
                        Validator validator,
                        MetricRegistry metricRegistry,
-                       ClassLoader classLoader) {
+                       ClassLoader classLoader,
+                       HealthCheckRegistry healthCheckRegistry) {
         this.name = name;
         this.objectMapper = objectMapper;
         this.metricRegistry = metricRegistry;
-        this.healthCheckRegistry = new HealthCheckRegistry();
+        this.healthCheckRegistry = healthCheckRegistry;
         this.validator = validator;
 
         this.servletContext = new MutableServletContextHandler();
@@ -76,17 +76,31 @@ public class Environment {
 
         final DropwizardResourceConfig jerseyConfig = new DropwizardResourceConfig(metricRegistry);
 
-        this.jerseyServletContainer = new JerseyContainerHolder(new ServletContainer(jerseyConfig));
+        this.jerseyServletContainer = new JerseyContainerHolder(new JerseyServletContainer(jerseyConfig));
         this.jerseyEnvironment = new JerseyEnvironment(jerseyServletContainer, jerseyConfig);
 
 
         this.healthCheckExecutorService = this.lifecycle().executorService("TimeBoundHealthCheck-pool-%d")
-                .workQueue(new ArrayBlockingQueue<Runnable>(1))
+                .workQueue(new ArrayBlockingQueue<>(1))
                 .minThreads(1)
                 .maxThreads(4)
                 .threadFactory(new ThreadFactoryBuilder().setDaemon(true).build())
                 .rejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy())
                 .build();
+
+        SharedMetricRegistries.add("default", metricRegistry);
+        SharedHealthCheckRegistries.add("default", healthCheckRegistry);
+    }
+
+    /**
+     * Creates an environment with default health check registry
+     */
+    public Environment(String name,
+                       ObjectMapper objectMapper,
+                       Validator validator,
+                       MetricRegistry metricRegistry,
+                       ClassLoader classLoader) {
+        this(name, objectMapper, validator, metricRegistry, classLoader, new HealthCheckRegistry());
     }
 
     /**
@@ -149,7 +163,7 @@ public class Environment {
      * Sets the application's {@link Validator}.
      */
     public void setValidator(Validator validator) {
-        this.validator = checkNotNull(validator);
+        this.validator = requireNonNull(validator);
     }
 
     /**
@@ -169,8 +183,6 @@ public class Environment {
     /*
     * Internal Accessors
     */
-
-    // TODO: 5/4/13 <coda> -- figure out how to make these accessors not a public API
 
     public MutableServletContextHandler getApplicationContext() {
         return servletContext;

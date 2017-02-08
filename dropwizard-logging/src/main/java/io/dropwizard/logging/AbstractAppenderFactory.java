@@ -3,18 +3,22 @@ package io.dropwizard.logging;
 import ch.qos.logback.classic.AsyncAppender;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.LoggerContext;
-import ch.qos.logback.classic.filter.ThresholdFilter;
-import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.Appender;
 import ch.qos.logback.core.AsyncAppenderBase;
 import ch.qos.logback.core.Context;
-import ch.qos.logback.core.spi.FilterAttachable;
+import ch.qos.logback.core.pattern.PatternLayoutBase;
+import ch.qos.logback.core.spi.DeferredProcessingAware;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableList;
+import io.dropwizard.logging.async.AsyncAppenderFactory;
+import io.dropwizard.logging.filter.FilterFactory;
+import io.dropwizard.logging.layout.LayoutFactory;
 
 import javax.validation.constraints.Max;
 import javax.validation.constraints.Min;
 import javax.validation.constraints.NotNull;
+import java.util.List;
 import java.util.TimeZone;
 
 /**
@@ -38,6 +42,14 @@ import java.util.TimeZone;
  *         <td>An appender-specific log format.</td>
  *     </tr>
  *     <tr>
+ *         <td>{@code timeZone}</td>
+ *         <td>{@code UTC}</td>
+ *         <td>
+ *             The time zone to which event timestamps will be converted.
+ *             Ignored if logFormat is supplied.
+ *         </td>
+ *     </tr>
+ *     <tr>
  *         <td>{@code queueSize}</td>
  *         <td>{@link AsyncAppenderBase}</td>
  *         <td>The maximum capacity of the blocking queue.</td>
@@ -59,13 +71,25 @@ import java.util.TimeZone;
  *             events of level WARN and ERROR. To keep all events, set discardingThreshold to 0.
  *         </td>
  *     </tr>
+ *     <tr>
+ *         <td>{@code filterFactories}</td>
+ *         <td>(none)</td>
+ *         <td>
+ *             A list of {@link FilterFactory filters} to apply to the appender, in order,
+ *             after the {@code threshold}.
+ *         </td>
+ *     </tr>
  * </table>
  */
-public abstract class AbstractAppenderFactory implements AppenderFactory {
+public abstract class AbstractAppenderFactory<E extends DeferredProcessingAware> implements AppenderFactory<E> {
+
     @NotNull
     protected Level threshold = Level.ALL;
 
     protected String logFormat;
+
+    @NotNull
+    protected TimeZone timeZone = TimeZone.getTimeZone("UTC");
 
     @Min(1)
     @Max(Integer.MAX_VALUE)
@@ -74,6 +98,10 @@ public abstract class AbstractAppenderFactory implements AppenderFactory {
     private int discardingThreshold = -1;
 
     private boolean includeCallerData = false;
+
+    private ImmutableList<FilterFactory<E>> filterFactories = ImmutableList.of();
+    
+    private boolean neverBlock = false;
 
     @JsonProperty
     public int getQueueSize() {
@@ -116,6 +144,16 @@ public abstract class AbstractAppenderFactory implements AppenderFactory {
     }
 
     @JsonProperty
+    public TimeZone getTimeZone() {
+        return timeZone;
+    }
+
+    @JsonProperty
+    public void setTimeZone(TimeZone timeZone) {
+        this.timeZone = timeZone;
+    }
+
+    @JsonProperty
     public boolean isIncludeCallerData() {
         return includeCallerData;
     }
@@ -125,31 +163,42 @@ public abstract class AbstractAppenderFactory implements AppenderFactory {
         this.includeCallerData = includeCallerData;
     }
 
-    protected Appender<ILoggingEvent> wrapAsync(Appender<ILoggingEvent> appender) {
-        return wrapAsync(appender, appender.getContext());
+    @JsonProperty
+    public ImmutableList<FilterFactory<E>> getFilterFactories() {
+        return filterFactories;
     }
 
-    protected Appender<ILoggingEvent> wrapAsync(Appender<ILoggingEvent> appender, Context context) {
-        final AsyncAppender asyncAppender = new AsyncAppender();
-        asyncAppender.setIncludeCallerData(includeCallerData);
+    @JsonProperty
+    public void setFilterFactories(List<FilterFactory<E>> appenders) {
+        this.filterFactories = ImmutableList.copyOf(appenders);
+    }
+    
+    @JsonProperty
+    public void setNeverBlock(boolean neverBlock) {
+        this.neverBlock = neverBlock;
+    }
+
+    protected Appender<E> wrapAsync(Appender<E> appender, AsyncAppenderFactory<E> asyncAppenderFactory) {
+        return wrapAsync(appender, asyncAppenderFactory, appender.getContext());
+    }
+
+    protected Appender<E> wrapAsync(Appender<E> appender, AsyncAppenderFactory<E> asyncAppenderFactory, Context context) {
+        final AsyncAppenderBase<E> asyncAppender = asyncAppenderFactory.build();
+        if (asyncAppender instanceof AsyncAppender) {
+            ((AsyncAppender) asyncAppender).setIncludeCallerData(includeCallerData);
+        }
         asyncAppender.setQueueSize(queueSize);
         asyncAppender.setDiscardingThreshold(discardingThreshold);
         asyncAppender.setContext(context);
         asyncAppender.setName("async-" + appender.getName());
         asyncAppender.addAppender(appender);
+        asyncAppender.setNeverBlock(neverBlock);
         asyncAppender.start();
         return asyncAppender;
     }
 
-    protected void addThresholdFilter(FilterAttachable<ILoggingEvent> appender, Level threshold) {
-        final ThresholdFilter filter = new ThresholdFilter();
-        filter.setLevel(threshold.toString());
-        filter.start();
-        appender.addFilter(filter);
-    }
-
-    protected DropwizardLayout buildLayout(LoggerContext context, TimeZone timeZone) {
-        final DropwizardLayout formatter = new DropwizardLayout(context, timeZone);
+    protected PatternLayoutBase<E> buildLayout(LoggerContext context, LayoutFactory<E> layoutFactory) {
+        final PatternLayoutBase<E> formatter = layoutFactory.build(context, timeZone);
         if (!Strings.isNullOrEmpty(logFormat)) {
             formatter.setPattern(logFormat);
         }

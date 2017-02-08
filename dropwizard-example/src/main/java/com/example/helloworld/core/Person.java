@@ -12,12 +12,14 @@ import java.util.Objects;
 
 @Entity
 @Table(name = "people")
-@NamedQueries({
+@NamedQueries(
+    {
         @NamedQuery(
-                name = "com.example.helloworld.core.Person.findAll",
-                query = "SELECT p FROM Person p"
+            name = "com.example.helloworld.core.Person.findAll",
+            query = "SELECT p FROM Person p"
         )
-})
+    }
+)
 public class Person {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -63,8 +65,12 @@ public class Person {
 
     @Override
     public boolean equals(Object o) {
-        if (this == o) return true;
-        if (!(o instanceof Person)) return false;
+        if (this == o) {
+            return true;
+        }
+        if (!(o instanceof Person)) {
+            return false;
+        }
 
         final Person that = (Person) o;
 

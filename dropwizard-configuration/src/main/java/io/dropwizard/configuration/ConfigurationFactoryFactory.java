@@ -1,11 +1,11 @@
 package io.dropwizard.configuration;
 
-import javax.validation.Validator;
-
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import javax.validation.Validator;
+
 public interface ConfigurationFactoryFactory<T> {
-    public ConfigurationFactory<T> create(Class<T> klass,
+    ConfigurationFactory<T> create(Class<T> klass,
             Validator validator,
             ObjectMapper objectMapper,
             String propertyPrefix);

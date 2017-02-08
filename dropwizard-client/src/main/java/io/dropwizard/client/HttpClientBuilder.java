@@ -9,9 +9,13 @@ import com.google.common.annotations.VisibleForTesting;
 import io.dropwizard.client.proxy.AuthConfiguration;
 import io.dropwizard.client.proxy.NonProxyListProxyRoutePlanner;
 import io.dropwizard.client.proxy.ProxyConfiguration;
+import io.dropwizard.client.ssl.TlsConfiguration;
+import io.dropwizard.lifecycle.Managed;
 import io.dropwizard.setup.Environment;
 import io.dropwizard.util.Duration;
+import javax.net.ssl.HostnameVerifier;
 import org.apache.http.ConnectionReuseStrategy;
+import org.apache.http.Header;
 import org.apache.http.HttpHost;
 import org.apache.http.HttpResponse;
 import org.apache.http.auth.AuthScope;
@@ -19,6 +23,7 @@ import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.CredentialsProvider;
 import org.apache.http.client.HttpClient;
 import org.apache.http.client.HttpRequestRetryHandler;
+import org.apache.http.client.RedirectStrategy;
 import org.apache.http.client.config.CookieSpecs;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.config.Registry;
@@ -37,41 +42,40 @@ import org.apache.http.impl.client.DefaultConnectionKeepAliveStrategy;
 import org.apache.http.impl.client.DefaultHttpRequestRetryHandler;
 import org.apache.http.impl.conn.SystemDefaultDnsResolver;
 import org.apache.http.protocol.HttpContext;
+import org.apache.http.protocol.HttpProcessor;
 
-import java.io.IOException;
+import java.util.List;
 
 /**
  * A convenience class for building {@link HttpClient} instances.
  * <p>
  * Among other things,
  * <ul>
- * <li>Disables stale connection checks</li>
+ * <li>Disables stale connection checks by default</li>
  * <li>Disables Nagle's algorithm</li>
  * <li>Disables cookie management by default</li>
  * </ul>
  * </p>
  */
 public class HttpClientBuilder {
-    private static final HttpRequestRetryHandler NO_RETRIES = new HttpRequestRetryHandler() {
-        @Override
-        public boolean retryRequest(IOException exception, int executionCount, HttpContext context) {
-            return false;
-        }
-    };
+    private static final HttpRequestRetryHandler NO_RETRIES = (exception, executionCount, context) -> false;
 
     private final MetricRegistry metricRegistry;
     private String environmentName;
+    private Environment environment;
     private HttpClientConfiguration configuration = new HttpClientConfiguration();
     private DnsResolver resolver = new SystemDefaultDnsResolver();
+    private HostnameVerifier verifier;
     private HttpRequestRetryHandler httpRequestRetryHandler;
-    private Registry<ConnectionSocketFactory> registry
-            = RegistryBuilder.<ConnectionSocketFactory>create()
-            .register("http", PlainConnectionSocketFactory.getSocketFactory())
-            .register("https", SSLConnectionSocketFactory.getSocketFactory())
-            .build();
+    private Registry<ConnectionSocketFactory> registry;
+
     private CredentialsProvider credentialsProvider = null;
     private HttpClientMetricNameStrategy metricNameStrategy = HttpClientMetricNameStrategies.METHOD_ONLY;
     private HttpRoutePlanner routePlanner = null;
+    private RedirectStrategy redirectStrategy;
+    private boolean disableContentCompression;
+    private List<? extends Header> defaultHeaders;
+    private HttpProcessor httpProcessor;
 
     public HttpClientBuilder(MetricRegistry metricRegistry) {
         this.metricRegistry = metricRegistry;
@@ -80,6 +84,7 @@ public class HttpClientBuilder {
     public HttpClientBuilder(Environment environment) {
         this(environment.metrics());
         name(environment.getName());
+        this.environment = environment;
     }
 
     /**
@@ -112,6 +117,17 @@ public class HttpClientBuilder {
      */
     public HttpClientBuilder using(DnsResolver resolver) {
         this.resolver = resolver;
+        return this;
+    }
+
+    /**
+     * Use the give (@link HostnameVerifier} instance.
+     *
+     * @param verifier a {@link HostnameVerifier} instance
+     * @return {@code this}
+     */
+    public HttpClientBuilder using(HostnameVerifier verifier) {
+        this.verifier = verifier;
         return this;
     }
 
@@ -171,23 +187,96 @@ public class HttpClientBuilder {
     }
 
     /**
+     * Use the given {@link org.apache.http.client.RedirectStrategy} instance.
+     *
+     * @param redirectStrategy    a {@link org.apache.http.client.RedirectStrategy} instance
+     * @return {@code this}
+     */
+    public HttpClientBuilder using(RedirectStrategy redirectStrategy) {
+        this.redirectStrategy = redirectStrategy;
+        return this;
+    }
+
+    /**
+     * Use the given default headers for each HTTP request
+     *
+     * @param defaultHeaders HTTP headers
+     * @return {@code} this
+     */
+    public HttpClientBuilder using(List<? extends Header> defaultHeaders) {
+        this.defaultHeaders = defaultHeaders;
+        return this;
+    }
+
+    /**
+     * Use the given {@link HttpProcessor} instance
+     *
+     * @param httpProcessor a {@link HttpProcessor} instance
+     * @return {@code} this
+     */
+    public HttpClientBuilder using(HttpProcessor httpProcessor) {
+        this.httpProcessor = httpProcessor;
+        return this;
+    }
+
+    /**
+     * Disable support of decompression of responses
+     *
+     * @param disableContentCompression {@code true}, if disabled
+     * @return {@code this}
+     */
+    public HttpClientBuilder disableContentCompression(boolean disableContentCompression) {
+        this.disableContentCompression = disableContentCompression;
+        return this;
+    }
+
+    /**
      * Builds the {@link HttpClient}.
      *
      * @param name
      * @return an {@link CloseableHttpClient}
      */
     public CloseableHttpClient build(String name) {
-        return buildWithDefaultRequestConfiguration(name).getClient();
+        final CloseableHttpClient client = buildWithDefaultRequestConfiguration(name).getClient();
+        // If the environment is present, we tie the client with the server lifecycle
+        if (environment != null) {
+            environment.lifecycle().manage(new Managed() {
+                @Override
+                public void start() throws Exception {
+                }
+
+                @Override
+                public void stop() throws Exception {
+                    client.close();
+                }
+            });
+        }
+        return client;
     }
 
     /**
-     * For internal use only, used in {@link io.dropwizard.client.JerseyClientBuilder} to create an instance of {@link io.dropwizard.client.DropwizardApacheConnector}
+     * For internal use only, used in {@link io.dropwizard.client.JerseyClientBuilder}
+     * to create an instance of {@link io.dropwizard.client.DropwizardApacheConnector}
+     *
      * @param name
      * @return an {@link io.dropwizard.client.ConfiguredCloseableHttpClient}
      */
     ConfiguredCloseableHttpClient buildWithDefaultRequestConfiguration(String name) {
-        final InstrumentedHttpClientConnectionManager manager = createConnectionManager(registry, name);
-        return createClient(org.apache.http.impl.client.HttpClientBuilder.create(), manager, name);
+        return createClient(org.apache.http.impl.client.HttpClientBuilder.create(),
+                createConnectionManager(createConfiguredRegistry(), name), name);
+    }
+
+    /**
+     * Configures an Apache {@link org.apache.http.impl.client.HttpClientBuilder HttpClientBuilder}.
+     *
+     * Intended for use by subclasses to inject HttpClientBuilder
+     * configuration. The default implementation is an identity
+     * function.
+     */
+    protected org.apache.http.impl.client.HttpClientBuilder customizeBuilder(
+        org.apache.http.impl.client.HttpClientBuilder builder
+    ) {
+        return builder;
     }
 
     /**
@@ -199,7 +288,6 @@ public class HttpClientBuilder {
      * @param name
      * @return the configured {@link CloseableHttpClient}
      */
-    @VisibleForTesting
     protected ConfiguredCloseableHttpClient createClient(
             final org.apache.http.impl.client.HttpClientBuilder builder,
             final InstrumentedHttpClientConnectionManager manager,
@@ -228,7 +316,8 @@ public class HttpClientBuilder {
                 .setSoTimeout(timeout)
                 .build();
 
-        builder.setRequestExecutor(new InstrumentedHttpRequestExecutor(metricRegistry, metricNameStrategy, name))
+        customizeBuilder(builder)
+                .setRequestExecutor(new InstrumentedHttpRequestExecutor(metricRegistry, metricNameStrategy, name))
                 .setConnectionManager(manager)
                 .setDefaultRequestConfig(requestConfig)
                 .setDefaultSocketConfig(socketConfig)
@@ -249,12 +338,12 @@ public class HttpClientBuilder {
         }
 
         // create a tunnel through a proxy host if it's specified in the config
-        ProxyConfiguration proxy = configuration.getProxyConfiguration();
+        final ProxyConfiguration proxy = configuration.getProxyConfiguration();
         if (proxy != null) {
-            HttpHost httpHost = new HttpHost(proxy.getHost(), proxy.getPort(), proxy.getScheme());
+            final HttpHost httpHost = new HttpHost(proxy.getHost(), proxy.getPort(), proxy.getScheme());
             builder.setRoutePlanner(new NonProxyListProxyRoutePlanner(httpHost, proxy.getNonProxyHosts()));
             // if the proxy host requires authentication then add the host credentials to the credentials provider
-            AuthConfiguration auth = proxy.getAuth();
+            final AuthConfiguration auth = proxy.getAuth();
             if (auth != null) {
                 if (credentialsProvider == null) {
                     credentialsProvider = new BasicCredentialsProvider();
@@ -272,6 +361,26 @@ public class HttpClientBuilder {
             builder.setRoutePlanner(routePlanner);
         }
 
+        if (disableContentCompression) {
+            builder.disableContentCompression();
+        }
+
+        if (redirectStrategy != null) {
+            builder.setRedirectStrategy(redirectStrategy);
+        }
+
+        if (defaultHeaders != null) {
+            builder.setDefaultHeaders(defaultHeaders);
+        }
+
+        if (verifier != null) {
+            builder.setSSLHostnameVerifier(verifier);
+        }
+
+        if (httpProcessor != null) {
+            builder.setHttpProcessor(httpProcessor);
+        }
+
         return new ConfiguredCloseableHttpClient(builder.build(), requestConfig);
     }
 
@@ -284,7 +393,7 @@ public class HttpClientBuilder {
      */
     protected String createUserAgent(String name) {
         final String defaultUserAgent = environmentName == null ? name : String.format("%s (%s)", environmentName, name);
-        return configuration.getUserAgent().or(defaultUserAgent);
+        return configuration.getUserAgent().orElse(defaultUserAgent);
     }
 
 
@@ -312,11 +421,37 @@ public class HttpClientBuilder {
     }
 
     @VisibleForTesting
+    Registry<ConnectionSocketFactory> createConfiguredRegistry() {
+        if (registry != null) {
+            return registry;
+        }
+
+        TlsConfiguration tlsConfiguration = configuration.getTlsConfiguration();
+        if (tlsConfiguration == null && verifier != null) {
+            tlsConfiguration = new TlsConfiguration();
+        }
+
+        final SSLConnectionSocketFactory sslConnectionSocketFactory;
+        if (tlsConfiguration == null) {
+            sslConnectionSocketFactory = SSLConnectionSocketFactory.getSocketFactory();
+        } else {
+            sslConnectionSocketFactory = new DropwizardSSLConnectionSocketFactory(tlsConfiguration,
+                verifier).getSocketFactory();
+        }
+
+        return RegistryBuilder.<ConnectionSocketFactory>create()
+                .register("http", PlainConnectionSocketFactory.getSocketFactory())
+                .register("https", sslConnectionSocketFactory)
+                .build();
+    }
+
+
+    @VisibleForTesting
     protected InstrumentedHttpClientConnectionManager configureConnectionManager(
             InstrumentedHttpClientConnectionManager connectionManager) {
         connectionManager.setDefaultMaxPerRoute(configuration.getMaxConnectionsPerRoute());
         connectionManager.setMaxTotal(configuration.getMaxConnections());
-        connectionManager.setValidateAfterInactivity(0);
+        connectionManager.setValidateAfterInactivity((int) configuration.getValidateAfterInactivityPeriod().toMilliseconds());
         return connectionManager;
     }
 }

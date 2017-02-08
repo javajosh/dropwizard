@@ -4,12 +4,14 @@ import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.httpclient.HttpClientMetricNameStrategy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
 import io.dropwizard.jersey.gzip.ConfiguredGZipEncoder;
 import io.dropwizard.jersey.gzip.GZipDecoder;
-import io.dropwizard.jersey.jackson.JacksonMessageBodyProvider;
+import io.dropwizard.jersey.jackson.JacksonBinder;
+import io.dropwizard.jersey.validation.HibernateValidationFeature;
+import io.dropwizard.jersey.validation.Validators;
+import io.dropwizard.lifecycle.Managed;
 import io.dropwizard.setup.Environment;
+import io.dropwizard.util.Duration;
 import org.apache.http.client.CredentialsProvider;
 import org.apache.http.client.HttpRequestRetryHandler;
 import org.apache.http.config.Registry;
@@ -17,20 +19,24 @@ import org.apache.http.conn.DnsResolver;
 import org.apache.http.conn.routing.HttpRoutePlanner;
 import org.apache.http.conn.socket.ConnectionSocketFactory;
 import org.glassfish.jersey.client.ClientConfig;
-import org.glassfish.jersey.client.spi.Connector;
+import org.glassfish.jersey.client.rx.Rx;
+import org.glassfish.jersey.client.rx.RxClient;
+import org.glassfish.jersey.client.rx.RxInvoker;
 import org.glassfish.jersey.client.spi.ConnectorProvider;
 
-import javax.validation.Validation;
+import javax.net.ssl.HostnameVerifier;
 import javax.validation.Validator;
 import javax.ws.rs.client.Client;
 import javax.ws.rs.client.ClientBuilder;
 import javax.ws.rs.core.Configuration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 
-import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.Objects.requireNonNull;
 
 
 /**
@@ -51,17 +57,18 @@ import static com.google.common.base.Preconditions.checkNotNull;
  */
 public class JerseyClientBuilder {
 
-    private final List<Object> singletons = Lists.newArrayList();
-    private final List<Class<?>> providers = Lists.newArrayList();
-    private final Map<String, Object> properties = Maps.newLinkedHashMap();
+    private final List<Object> singletons = new ArrayList<>();
+    private final List<Class<?>> providers = new ArrayList<>();
+    private final Map<String, Object> properties = new LinkedHashMap<>();
     private JerseyClientConfiguration configuration = new JerseyClientConfiguration();
 
     private HttpClientBuilder apacheHttpClientBuilder;
-    private Validator validator = Validation.buildDefaultValidatorFactory().getValidator();
+    private Validator validator = Validators.newValidator();
     private Environment environment;
     private ObjectMapper objectMapper;
     private ExecutorService executorService;
     private ConnectorProvider connectorProvider;
+    private Duration shutdownGracePeriod = Duration.seconds(5);
 
     public JerseyClientBuilder(Environment environment) {
         this.apacheHttpClientBuilder = new HttpClientBuilder(environment);
@@ -84,7 +91,7 @@ public class JerseyClientBuilder {
      * @return {@code this}
      */
     public JerseyClientBuilder withProvider(Object provider) {
-        singletons.add(checkNotNull(provider));
+        singletons.add(requireNonNull(provider));
         return this;
     }
 
@@ -96,7 +103,7 @@ public class JerseyClientBuilder {
      * @return {@code this}
      */
     public JerseyClientBuilder withProvider(Class<?> klass) {
-        providers.add(checkNotNull(klass));
+        providers.add(requireNonNull(klass));
         return this;
     }
 
@@ -112,6 +119,18 @@ public class JerseyClientBuilder {
      */
     public JerseyClientBuilder withProperty(String propertyName, Object propertyValue) {
         properties.put(propertyName, propertyValue);
+        return this;
+    }
+
+    /**
+     * Sets the shutdown grace period.
+     *
+     * @param shutdownGracePeriod a period of time to await shutdown of the
+     *        configured {ExecutorService}.
+     * @return {@code this}
+     */
+    public JerseyClientBuilder withShutdownGracePeriod(Duration shutdownGracePeriod) {
+        this.shutdownGracePeriod = shutdownGracePeriod;
         return this;
     }
 
@@ -224,6 +243,22 @@ public class JerseyClientBuilder {
     }
 
     /**
+     * Use the given {@link HostnameVerifier} instance.
+     *
+     * Note that if {@link io.dropwizard.client.ssl.TlsConfiguration#isVerifyHostname()}
+     * returns false, all host name verification is bypassed, including
+     * host name verification performed by a verifier specified
+     * through this interface.
+     *
+     * @param verifier a {@link HostnameVerifier} instance
+     * @return {@code this}
+     */
+    public JerseyClientBuilder using(HostnameVerifier verifier) {
+        apacheHttpClientBuilder.using(verifier);
+        return this;
+    }
+
+    /**
      * Use the given {@link Registry} instance of connection socket factories.
      *
      * @param registry a {@link Registry} instance of connection socket factories
@@ -279,6 +314,15 @@ public class JerseyClientBuilder {
     }
 
     /**
+     * Builds the {@link RxClient} instance.
+     *
+     * @return a fully-configured {@link RxClient}
+     */
+    public <RX extends RxInvoker> RxClient<RX> buildRx(String name, Class<RX> invokerType) {
+        return Rx.from(build(name), invokerType, executorService);
+    }
+
+    /**
      * Builds the {@link Client} instance.
      *
      * @return a fully-configured {@link Client}
@@ -289,16 +333,22 @@ public class JerseyClientBuilder {
                     "an executor service and an object mapper");
         }
 
-        if (executorService == null && environment != null) {
-            executorService = environment.lifecycle()
+        if (executorService == null) {
+            // Create an ExecutorService based on the provided
+            // configuration. The DisposableExecutorService decorator
+            // is used to ensure that the service is shut down if the
+            // Jersey client disposes of it.
+            executorService = new DropwizardExecutorProvider.DisposableExecutorService(
+                environment.lifecycle()
                     .executorService("jersey-client-" + name + "-%d")
                     .minThreads(configuration.getMinThreads())
                     .maxThreads(configuration.getMaxThreads())
-                    .workQueue(new ArrayBlockingQueue<Runnable>(configuration.getWorkQueueSize()))
-                    .build();
+                    .workQueue(new ArrayBlockingQueue<>(configuration.getWorkQueueSize()))
+                    .build()
+            );
         }
 
-        if (objectMapper == null && environment != null) {
+        if (objectMapper == null) {
             objectMapper = environment.getObjectMapper();
         }
 
@@ -312,8 +362,26 @@ public class JerseyClientBuilder {
     private Client build(String name, ExecutorService threadPool,
                          ObjectMapper objectMapper,
                          Validator validator) {
-        final Client client = ClientBuilder.newClient(buildConfig(name, threadPool, objectMapper, validator));
+        if (!configuration.isGzipEnabled()) {
+            apacheHttpClientBuilder.disableContentCompression(true);
+        }
 
+        final Client client = ClientBuilder.newClient(buildConfig(name, threadPool, objectMapper, validator));
+        client.register(new JerseyIgnoreRequestUserAgentHeaderFilter());
+
+        // Tie the client to server lifecycle
+        if (environment != null) {
+            environment.lifecycle().manage(new Managed() {
+                @Override
+                public void start() throws Exception {
+                }
+
+                @Override
+                public void stop() throws Exception {
+                    client.close();
+                }
+            });
+        }
         if (configuration.isGzipEnabled()) {
             client.register(new GZipDecoder());
             client.register(new ConfiguredGZipEncoder(configuration.isGzipEnabledForRequests()));
@@ -335,25 +403,21 @@ public class JerseyClientBuilder {
             config.register(provider);
         }
 
-        config.register(new JacksonMessageBodyProvider(objectMapper, validator));
+        config.register(new JacksonBinder(objectMapper));
+        config.register(new HibernateValidationFeature(validator));
 
         for (Map.Entry<String, Object> property : this.properties.entrySet()) {
             config.property(property.getKey(), property.getValue());
         }
 
-        config.register(new DropwizardExecutorProvider(threadPool));
+        config.register(new DropwizardExecutorProvider(threadPool, shutdownGracePeriod));
         if (connectorProvider == null) {
             final ConfiguredCloseableHttpClient apacheHttpClient =
                     apacheHttpClientBuilder.buildWithDefaultRequestConfiguration(name);
-            connectorProvider = new ConnectorProvider() {
-                @Override
-                public Connector getConnector(Client client, Configuration runtimeConfig) {
-                    return new DropwizardApacheConnector(
-                            apacheHttpClient.getClient(),
-                            apacheHttpClient.getDefaultRequestConfig(),
-                            configuration.isChunkedEncodingEnabled());
-                }
-            };
+            connectorProvider = (client, runtimeConfig) -> new DropwizardApacheConnector(
+                    apacheHttpClient.getClient(),
+                    apacheHttpClient.getDefaultRequestConfig(),
+                    configuration.isChunkedEncodingEnabled());
         }
         config.connectorProvider(connectorProvider);
 

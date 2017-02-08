@@ -5,41 +5,54 @@ import com.codahale.metrics.health.HealthCheck;
 import io.dropwizard.Application;
 import io.dropwizard.Configuration;
 import io.dropwizard.jackson.Jackson;
+import io.dropwizard.jersey.validation.Validators;
 import io.dropwizard.setup.Environment;
 import io.dropwizard.testing.ResourceHelpers;
 import io.dropwizard.testing.junit.DropwizardAppRule;
 import io.dropwizard.util.Duration;
+import org.apache.http.Header;
 import org.apache.http.HttpStatus;
+import org.apache.http.ProtocolVersion;
+import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.conn.ConnectTimeoutException;
+import org.apache.http.conn.HttpHostConnectException;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.message.BasicHeader;
+import org.apache.http.message.BasicStatusLine;
 import org.assertj.core.api.AbstractLongAssert;
+import org.eclipse.jetty.util.component.LifeCycle;
 import org.glassfish.jersey.client.ClientProperties;
-import org.junit.Before;
+import org.glassfish.jersey.client.ClientRequest;
+import org.glassfish.jersey.client.ClientResponse;
+import org.glassfish.jersey.client.JerseyClient;
 import org.junit.After;
+import org.junit.Before;
 import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
+import org.mockito.Mockito;
 
 import javax.ws.rs.GET;
 import javax.ws.rs.Path;
 import javax.ws.rs.ProcessingException;
-import javax.ws.rs.client.Client;
 import javax.ws.rs.client.WebTarget;
+import javax.ws.rs.core.MultivaluedHashMap;
 import javax.ws.rs.core.Response;
 import java.net.NoRouteToHostException;
 import java.net.SocketTimeoutException;
 import java.net.URI;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.CoreMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class DropwizardApacheConnectorTest {
 
-    private static final int SLEEP_TIME_IN_MILLIS = 500;
-    private static final int DEFAULT_CONNECT_TIMEOUT_IN_MILLIS = 200;
+    private static final int SLEEP_TIME_IN_MILLIS = 1000;
+    private static final int DEFAULT_CONNECT_TIMEOUT_IN_MILLIS = 500;
     private static final int ERROR_MARGIN_IN_MILLIS = 300;
     private static final int INCREASE_IN_MILLIS = 100;
     private static final URI NON_ROUTABLE_ADDRESS = URI.create("http://10.255.255.1");
@@ -53,25 +66,33 @@ public class DropwizardApacheConnectorTest {
     public ExpectedException thrown = ExpectedException.none();
 
     private final URI testUri = URI.create("http://localhost:" + APP_RULE.getLocalPort());
-    private final ExecutorService executorService = Executors.newSingleThreadExecutor();
 
-    private Client client;
+    private JerseyClient client;
+    private Environment environment;
 
     @Before
-    public void setup() {
+    public void setup() throws Exception {
         JerseyClientConfiguration clientConfiguration = new JerseyClientConfiguration();
         clientConfiguration.setConnectionTimeout(Duration.milliseconds(SLEEP_TIME_IN_MILLIS / 2));
         clientConfiguration.setTimeout(Duration.milliseconds(DEFAULT_CONNECT_TIMEOUT_IN_MILLIS));
-        client = new JerseyClientBuilder(new MetricRegistry())
-                .using(executorService, Jackson.newObjectMapper())
+
+        environment = new Environment("test-dropwizard-apache-connector", Jackson.newObjectMapper(),
+                Validators.newValidator(), new MetricRegistry(),
+                getClass().getClassLoader());
+        client = (JerseyClient) new JerseyClientBuilder(environment)
                 .using(clientConfiguration)
                 .build("test");
+        for (LifeCycle lifeCycle : environment.lifecycle().getManagedObjects()) {
+            lifeCycle.start();
+        }
     }
 
     @After
     public void tearDown() throws Exception {
-        executorService.shutdown();
-        client.close();
+        for (LifeCycle lifeCycle : environment.lifecycle().getManagedObjects()) {
+            lifeCycle.stop();
+        }
+        assertThat(client.isClosed()).isTrue();
     }
 
     @Test
@@ -106,6 +127,16 @@ public class DropwizardApacheConnectorTest {
     public void connect_timeout_override_changes_how_long_it_takes_for_a_connection_to_timeout() {
         // before override
         WebTarget target = client.target(NON_ROUTABLE_ADDRESS);
+
+        //This can't be tested without a real connection
+        try {
+            target.request().get(Response.class);
+        } catch (ProcessingException e) {
+            if (e.getCause() instanceof HttpHostConnectException) {
+                return;
+            }
+        }
+
         assertThatConnectionTimeoutFor(target).isLessThan(DEFAULT_CONNECT_TIMEOUT_IN_MILLIS + ERROR_MARGIN_IN_MILLIS);
 
         // after override
@@ -130,6 +161,44 @@ public class DropwizardApacheConnectorTest {
                         .get(Response.class)
                         .getStatus()
         ).isEqualTo(HttpStatus.SC_TEMPORARY_REDIRECT);
+    }
+
+    @Test
+    public void when_jersey_client_runtime_is_garbage_collected_apache_client_is_not_closed() {
+        for (int j = 0; j < 5; j++) {
+            System.gc(); // We actually want GC here
+            final String response = client.target(testUri + "/long_running")
+                    .property(ClientProperties.READ_TIMEOUT, SLEEP_TIME_IN_MILLIS * 2)
+                    .request()
+                    .get(String.class);
+            assertThat(response).isEqualTo("success");
+        }
+    }
+
+    @Test
+    public void multiple_headers_with_the_same_name_are_processed_successfully() throws Exception {
+
+        final CloseableHttpClient client = mock(CloseableHttpClient.class);
+        final DropwizardApacheConnector dropwizardApacheConnector = new DropwizardApacheConnector(client, null, false);
+        final Header[] apacheHeaders = {
+            new BasicHeader("Set-Cookie", "test1"),
+            new BasicHeader("Set-Cookie", "test2")
+        };
+
+        final CloseableHttpResponse apacheResponse = mock(CloseableHttpResponse.class);
+        when(apacheResponse.getStatusLine()).thenReturn(new BasicStatusLine(new ProtocolVersion("HTTP", 1, 1), 200, "OK"));
+        when(apacheResponse.getAllHeaders()).thenReturn(apacheHeaders);
+        when(client.execute(Mockito.any())).thenReturn(apacheResponse);
+
+        final ClientRequest jerseyRequest = mock(ClientRequest.class);
+        when(jerseyRequest.getUri()).thenReturn(URI.create("http://localhost"));
+        when(jerseyRequest.getMethod()).thenReturn("GET");
+        when(jerseyRequest.getHeaders()).thenReturn(new MultivaluedHashMap<>());
+
+        final ClientResponse jerseyResponse = dropwizardApacheConnector.apply(jerseyRequest);
+
+        assertThat(jerseyResponse.getStatus()).isEqualTo(apacheResponse.getStatusLine().getStatusCode());
+
     }
 
     @Path("/")

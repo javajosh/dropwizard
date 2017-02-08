@@ -2,14 +2,17 @@ package io.dropwizard.hibernate;
 
 import com.codahale.metrics.MetricRegistry;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.dropwizard.db.DataSourceFactory;
 import io.dropwizard.db.ManagedPooledDataSource;
 import io.dropwizard.lifecycle.setup.LifecycleEnvironment;
 import io.dropwizard.logging.BootstrapLogging;
 import io.dropwizard.setup.Environment;
+import org.hibernate.EmptyInterceptor;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
 import org.hibernate.cfg.Configuration;
+import org.hibernate.service.ServiceRegistry;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.junit.After;
@@ -18,7 +21,10 @@ import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 public class SessionFactoryFactoryTest {
     static {
@@ -30,9 +36,9 @@ public class SessionFactoryFactoryTest {
     private final HibernateBundle<?> bundle = mock(HibernateBundle.class);
     private final LifecycleEnvironment lifecycleEnvironment = mock(LifecycleEnvironment.class);
     private final Environment environment = mock(Environment.class);
-    private final DataSourceFactory config = new DataSourceFactory();
     private final MetricRegistry metricRegistry = new MetricRegistry();
 
+    private DataSourceFactory config;
     private SessionFactory sessionFactory;
 
     @Before
@@ -40,10 +46,16 @@ public class SessionFactoryFactoryTest {
         when(environment.metrics()).thenReturn(metricRegistry);
         when(environment.lifecycle()).thenReturn(lifecycleEnvironment);
 
+        config = new DataSourceFactory();
         config.setUrl("jdbc:hsqldb:mem:DbTest-" + System.currentTimeMillis());
         config.setUser("sa");
         config.setDriverClass("org.hsqldb.jdbcDriver");
         config.setValidationQuery("SELECT 1 FROM INFORMATION_SCHEMA.SYSTEM_USERS");
+
+        final ImmutableMap<String, String> properties = ImmutableMap.of(
+            "hibernate.show_sql", "true",
+            "hibernate.dialect", "org.hibernate.dialect.HSQLDialect");
+        config.setProperties(properties);
     }
 
     @After
@@ -62,9 +74,9 @@ public class SessionFactoryFactoryTest {
 
     @Test
     public void callsBundleToConfigure() throws Exception {
-      build();
+        build();
 
-      verify(bundle).configure(any(Configuration.class));
+        verify(bundle).configure(any(Configuration.class));
     }
 
     @Test
@@ -80,7 +92,7 @@ public class SessionFactoryFactoryTest {
     @Test
     public void setsACustomPoolName() {
         this.sessionFactory = factory.build(bundle, environment, config,
-                ImmutableList.<Class<?>>of(Person.class), "custom-hibernate-db");
+                ImmutableList.of(Person.class), "custom-hibernate-db");
 
         ArgumentCaptor<SessionFactoryManager> sessionFactoryManager = ArgumentCaptor.forClass(SessionFactoryManager.class);
         verify(lifecycleEnvironment).manage(sessionFactoryManager.capture());
@@ -92,31 +104,45 @@ public class SessionFactoryFactoryTest {
     public void buildsAWorkingSessionFactory() throws Exception {
         build();
 
-        final Session session = sessionFactory.openSession();
-        try {
+        try (Session session = sessionFactory.openSession()) {
             session.createSQLQuery("DROP TABLE people IF EXISTS").executeUpdate();
-            session.createSQLQuery("CREATE TABLE people (name varchar(100) primary key, email varchar(100), birthday timestamp)").executeUpdate();
+            session.createSQLQuery("CREATE TABLE people (name varchar(100) primary key, email varchar(100), birthday timestamp(0))").executeUpdate();
             session.createSQLQuery("INSERT INTO people VALUES ('Coda', 'coda@example.com', '1979-01-02 00:22:00')").executeUpdate();
 
-            final Person entity = (Person) session.get(Person.class, "Coda");
+            final Person entity = session.get(Person.class, "Coda");
 
             assertThat(entity.getName())
-                    .isEqualTo("Coda");
+                .isEqualTo("Coda");
 
             assertThat(entity.getEmail())
-                    .isEqualTo("coda@example.com");
+                .isEqualTo("coda@example.com");
 
             assertThat(entity.getBirthday().toDateTime(DateTimeZone.UTC))
-                    .isEqualTo(new DateTime(1979, 1, 2, 0, 22, DateTimeZone.UTC));
-        } finally {
-            session.close();
+                .isEqualTo(new DateTime(1979, 1, 2, 0, 22, DateTimeZone.UTC));
         }
+    }
+
+    @Test
+    public void configureRunsBeforeSessionFactoryCreation() {
+        final SessionFactoryFactory customFactory = new SessionFactoryFactory() {
+            @Override
+            protected void configure(Configuration configuration, ServiceRegistry registry) {
+                super.configure(configuration, registry);
+                configuration.setInterceptor(EmptyInterceptor.INSTANCE);
+            }
+        };
+        sessionFactory = customFactory.build(bundle,
+                                             environment,
+                                             config,
+                                             ImmutableList.of(Person.class));
+
+        assertThat(sessionFactory.getSessionFactoryOptions().getInterceptor()).isSameAs(EmptyInterceptor.INSTANCE);
     }
 
     private void build() {
         this.sessionFactory = factory.build(bundle,
                                             environment,
                                             config,
-                                            ImmutableList.<Class<?>>of(Person.class));
+                                            ImmutableList.of(Person.class));
     }
 }

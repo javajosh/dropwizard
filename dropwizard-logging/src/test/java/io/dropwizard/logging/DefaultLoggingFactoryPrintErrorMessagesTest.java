@@ -1,6 +1,7 @@
 package io.dropwizard.logging;
 
 import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.util.StatusPrinter;
 import com.codahale.metrics.MetricRegistry;
 import org.junit.After;
@@ -44,8 +45,8 @@ public class DefaultLoggingFactoryPrintErrorMessagesTest {
         factory.setAppenders(singletonList(newFileAppenderFactory(file)));
     }
 
-    private AppenderFactory newFileAppenderFactory(File file) {
-        FileAppenderFactory fileAppenderFactory = new FileAppenderFactory();
+    private AppenderFactory<ILoggingEvent> newFileAppenderFactory(File file) {
+        FileAppenderFactory<ILoggingEvent> fileAppenderFactory = new FileAppenderFactory<>();
 
         fileAppenderFactory.setCurrentLogFilename(file.toString() + File.separator + "my-log-file.log");
         fileAppenderFactory.setArchive(false);
@@ -61,14 +62,14 @@ public class DefaultLoggingFactoryPrintErrorMessagesTest {
 
     @Test
     public void testWhenUsingDefaultConstructor_SystemErrIsSet() throws Exception {
-        PrintStream configurationErrorsStream = new DefaultLoggingFactory().configurationErrorsStream;
+        PrintStream configurationErrorsStream = new DefaultLoggingFactory().getConfigurationErrorsStream();
 
         assertThat(configurationErrorsStream).isSameAs(System.err);
     }
 
     @Test
     public void testWhenUsingDefaultConstructor_StaticILoggerFactoryIsSet() throws Exception {
-        LoggerContext loggerContext = new DefaultLoggingFactory().loggerContext;
+        LoggerContext loggerContext = new DefaultLoggingFactory().getLoggerContext();
 
         assertThat(loggerContext).isSameAs(LoggerFactory.getILoggerFactory());
     }

@@ -6,8 +6,6 @@ import io.dropwizard.setup.Bootstrap;
 import io.dropwizard.setup.Environment;
 import net.sourceforge.argparse4j.inf.Namespace;
 
-import javax.validation.Validation;
-
 /**
  * A command which executes with a configured {@link Environment}.
  *
@@ -30,14 +28,17 @@ public abstract class EnvironmentCommand<T extends Configuration> extends Config
     }
 
     @Override
-    protected final void run(Bootstrap<T> bootstrap, Namespace namespace, T configuration) throws Exception {
+    protected void run(Bootstrap<T> bootstrap, Namespace namespace, T configuration) throws Exception {
         final Environment environment = new Environment(bootstrap.getApplication().getName(),
                                                         bootstrap.getObjectMapper(),
                                                         bootstrap.getValidatorFactory().getValidator(),
                                                         bootstrap.getMetricRegistry(),
-                                                        bootstrap.getClassLoader());
+                                                        bootstrap.getClassLoader(),
+                                                        bootstrap.getHealthCheckRegistry());
         configuration.getMetricsFactory().configure(environment.lifecycle(),
                                                     bootstrap.getMetricRegistry());
+        configuration.getServerFactory().configure(environment);
+
         bootstrap.run(configuration, environment);
         application.run(configuration, environment);
         run(environment, namespace, configuration);

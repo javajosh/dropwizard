@@ -10,23 +10,21 @@ import com.codahale.metrics.servlets.MetricsServlet;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.base.Charsets;
 import com.google.common.base.Joiner;
 import com.google.common.io.Resources;
-import io.dropwizard.jersey.errors.EarlyEofExceptionMapper;
-import io.dropwizard.jersey.errors.LoggingExceptionMapper;
 import io.dropwizard.jersey.filter.AllowedMethodsFilter;
-import io.dropwizard.jersey.jackson.JsonProcessingExceptionMapper;
-import io.dropwizard.jersey.validation.ConstraintViolationExceptionMapper;
-import org.glassfish.jersey.servlet.ServletContainer;
-import io.dropwizard.jersey.jackson.JacksonMessageBodyProvider;
+import io.dropwizard.jersey.jackson.JacksonBinder;
 import io.dropwizard.jersey.setup.JerseyEnvironment;
-import io.dropwizard.jetty.GzipFilterFactory;
+import io.dropwizard.jersey.validation.HibernateValidationFeature;
+import io.dropwizard.jetty.GzipHandlerFactory;
 import io.dropwizard.jetty.MutableServletContextHandler;
 import io.dropwizard.jetty.NonblockingServletHolder;
-import io.dropwizard.jetty.RequestLogFactory;
+import io.dropwizard.jetty.ServerPushFilterFactory;
 import io.dropwizard.lifecycle.setup.LifecycleEnvironment;
+import io.dropwizard.request.logging.LogbackAccessRequestLogFactory;
+import io.dropwizard.request.logging.RequestLogFactory;
 import io.dropwizard.servlets.ThreadNameFilter;
+import io.dropwizard.setup.ExceptionMapperBinder;
 import io.dropwizard.util.Duration;
 import io.dropwizard.validation.MinDuration;
 import io.dropwizard.validation.ValidationMethod;
@@ -35,12 +33,10 @@ import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.handler.ErrorHandler;
 import org.eclipse.jetty.server.handler.RequestLogHandler;
 import org.eclipse.jetty.server.handler.StatisticsHandler;
-import org.eclipse.jetty.servlet.FilterHolder;
 import org.eclipse.jetty.setuid.RLimit;
 import org.eclipse.jetty.setuid.SetUIDListener;
 import org.eclipse.jetty.util.BlockingArrayQueue;
 import org.eclipse.jetty.util.thread.ThreadPool;
-import org.hibernate.validator.constraints.NotEmpty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -52,12 +48,12 @@ import javax.validation.Validator;
 import javax.validation.constraints.Min;
 import javax.validation.constraints.NotNull;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.EnumSet;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.regex.Pattern;
-
-// TODO: 5/15/13 <coda> -- add tests for AbstractServerFactory
 
 /**
  * A base class for {@link ServerFactory} implementations.
@@ -77,7 +73,12 @@ import java.util.regex.Pattern;
  *     <tr>
  *         <td>{@code gzip}</td>
  *         <td></td>
- *         <td>The {@link GzipFilterFactory GZIP} configuration.</td>
+ *         <td>The {@link GzipHandlerFactory GZIP} configuration.</td>
+ *     </tr>
+ *     <tr>
+ *         <td>{@code serverPush}</td>
+ *         <td></td>
+ *         <td>The {@link ServerPushFilterFactory} configuration.</td>
  *     </tr>
  *     <tr>
  *         <td>{@code maxThreads}</td>
@@ -189,7 +190,7 @@ import java.util.regex.Pattern;
  *     </tr>
  *     <tr>
  *         <td>{@code rootPath}</td>
- *         <td>/</td>
+ *         <td>/*</td>
  *         <td>
  *           The URL pattern relative to {@code applicationContextPath} from which the JAX-RS resources will be served.
  *         </td>
@@ -205,11 +206,15 @@ public abstract class AbstractServerFactory implements ServerFactory {
 
     @Valid
     @NotNull
-    private RequestLogFactory requestLog = new RequestLogFactory();
+    private RequestLogFactory requestLog = new LogbackAccessRequestLogFactory();
 
     @Valid
     @NotNull
-    private GzipFilterFactory gzip = new GzipFilterFactory();
+    private GzipHandlerFactory gzip = new GzipHandlerFactory();
+
+    @Valid
+    @NotNull
+    private ServerPushFilterFactory serverPush = new ServerPushFilterFactory();
 
     @Min(2)
     private int maxThreads = 1024;
@@ -242,13 +247,14 @@ public abstract class AbstractServerFactory implements ServerFactory {
 
     private Boolean registerDefaultExceptionMappers = Boolean.TRUE;
 
+    private Boolean detailedJsonProcessingExceptionMapper = Boolean.FALSE;
+
     private Duration shutdownGracePeriod = Duration.seconds(30);
 
     @NotNull
     private Set<String> allowedMethods = AllowedMethodsFilter.DEFAULT_ALLOWED_METHODS;
 
-    @NotEmpty
-    private String jerseyRootPath = "/";
+    private Optional<String> jerseyRootPath = Optional.empty();
 
     @JsonIgnore
     @ValidationMethod(message = "must have a smaller minThreads than maxThreads")
@@ -267,13 +273,23 @@ public abstract class AbstractServerFactory implements ServerFactory {
     }
 
     @JsonProperty("gzip")
-    public GzipFilterFactory getGzipFilterFactory() {
+    public GzipHandlerFactory getGzipFilterFactory() {
         return gzip;
     }
 
     @JsonProperty("gzip")
-    public void setGzipFilterFactory(GzipFilterFactory gzip) {
+    public void setGzipFilterFactory(GzipHandlerFactory gzip) {
         this.gzip = gzip;
+    }
+
+    @JsonProperty("serverPush")
+    public ServerPushFilterFactory getServerPush() {
+        return serverPush;
+    }
+
+    @JsonProperty("serverPush")
+    public void setServerPush(ServerPushFilterFactory serverPush) {
+        this.serverPush = serverPush;
     }
 
     @JsonProperty
@@ -404,6 +420,14 @@ public abstract class AbstractServerFactory implements ServerFactory {
         this.registerDefaultExceptionMappers = registerDefaultExceptionMappers;
     }
 
+    public Boolean getDetailedJsonProcessingExceptionMapper() {
+        return detailedJsonProcessingExceptionMapper;
+    }
+
+    public void setDetailedJsonProcessingExceptionMapper(Boolean detailedJsonProcessingExceptionMapper) {
+        this.detailedJsonProcessingExceptionMapper = detailedJsonProcessingExceptionMapper;
+    }
+
     @JsonProperty
     public Duration getShutdownGracePeriod() {
         return shutdownGracePeriod;
@@ -425,13 +449,13 @@ public abstract class AbstractServerFactory implements ServerFactory {
     }
 
     @JsonProperty("rootPath")
-    public String getJerseyRootPath() {
+    public Optional<String> getJerseyRootPath() {
         return jerseyRootPath;
     }
 
     @JsonProperty("rootPath")
     public void setJerseyRootPath(String jerseyRootPath) {
-        this.jerseyRootPath = jerseyRootPath;
+        this.jerseyRootPath = Optional.ofNullable(jerseyRootPath);
     }
 
     protected Handler createAdminServlet(Server server,
@@ -469,26 +493,13 @@ public abstract class AbstractServerFactory implements ServerFactory {
         handler.addFilter(AllowedMethodsFilter.class, "/*", EnumSet.of(DispatcherType.REQUEST))
                 .setInitParameter(AllowedMethodsFilter.ALLOWED_METHODS_PARAM, Joiner.on(',').join(allowedMethods));
         handler.addFilter(ThreadNameFilter.class, "/*", EnumSet.of(DispatcherType.REQUEST));
-        if (gzip.isEnabled()) {
-            final FilterHolder holder = new FilterHolder(gzip.build());
-            handler.addFilter(holder, "/*", EnumSet.allOf(DispatcherType.class));
-        }
+        serverPush.addFilter(handler);
         if (jerseyContainer != null) {
-            String urlPattern = jerseyRootPath;
-            if (!urlPattern.endsWith("*") && !urlPattern.endsWith("/")) {
-                urlPattern += "/";
-            }
-            if (!urlPattern.endsWith("*")) {
-                urlPattern += "*";
-            }
-            jersey.setUrlPattern(urlPattern);
-            jersey.register(new JacksonMessageBodyProvider(objectMapper, validator));
+            jerseyRootPath.ifPresent(jersey::setUrlPattern);
+            jersey.register(new JacksonBinder(objectMapper));
+            jersey.register(new HibernateValidationFeature(validator));
             if (registerDefaultExceptionMappers == null || registerDefaultExceptionMappers) {
-                jersey.register(new LoggingExceptionMapper<Throwable>() {
-                });
-                jersey.register(new ConstraintViolationExceptionMapper());
-                jersey.register(new JsonProcessingExceptionMapper());
-                jersey.register(new EarlyEofExceptionMapper());
+                jersey.register(new ExceptionMapperBinder(detailedJsonProcessingExceptionMapper));
             }
             handler.addServlet(new NonblockingServletHolder(jerseyContainer), jersey.getUrlPattern());
         }
@@ -581,15 +592,19 @@ public abstract class AbstractServerFactory implements ServerFactory {
     protected Handler addStatsHandler(Handler handler) {
         // Graceful shutdown is implemented via the statistics handler,
         // see https://bugs.eclipse.org/bugs/show_bug.cgi?id=420142
-        StatisticsHandler statisticsHandler = new StatisticsHandler();
+        final StatisticsHandler statisticsHandler = new StatisticsHandler();
         statisticsHandler.setHandler(handler);
         return statisticsHandler;
+    }
+
+    protected Handler buildGzipHandler(Handler handler) {
+        return gzip.isEnabled() ? gzip.build(handler) : handler;
     }
 
     protected void printBanner(String name) {
         try {
             final String banner = WINDOWS_NEWLINE.matcher(Resources.toString(Resources.getResource("banner.txt"),
-                                                                             Charsets.UTF_8))
+                                                                             StandardCharsets.UTF_8))
                                                  .replaceAll("\n")
                                                  .replace("\n", String.format("%n"));
             LOGGER.info(String.format("Starting {}%n{}"), name, banner);

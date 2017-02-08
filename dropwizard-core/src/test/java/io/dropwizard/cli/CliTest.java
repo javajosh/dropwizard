@@ -1,23 +1,34 @@
 package io.dropwizard.cli;
 
-import com.google.common.base.Optional;
 import io.dropwizard.Application;
 import io.dropwizard.Configuration;
 import io.dropwizard.setup.Bootstrap;
 import io.dropwizard.setup.Environment;
 import io.dropwizard.util.JarLocation;
 import net.sourceforge.argparse4j.inf.Namespace;
+import org.junit.AfterClass;
 import org.junit.Before;
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 import java.io.ByteArrayOutputStream;
+import java.util.Locale;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 public class CliTest {
+    private static final Locale DEFAULT_LOCALE = Locale.getDefault();
+
     private final JarLocation location = mock(JarLocation.class);
-    @SuppressWarnings("unchecked")
     private final Application<Configuration> app = new Application<Configuration>() {
         @Override
         public void run(Configuration configuration, Environment environment) throws Exception {
@@ -28,6 +39,17 @@ public class CliTest {
     private final ByteArrayOutputStream stdErr = new ByteArrayOutputStream();
     private final CheckCommand<Configuration> command = spy(new CheckCommand<>(app));
     private Cli cli;
+
+    @BeforeClass
+    public static void init() {
+        // Set default locale to English because some tests assert localized error messages
+        Locale.setDefault(Locale.ENGLISH);
+    }
+
+    @AfterClass
+    public static void shutdown() {
+        Locale.setDefault(DEFAULT_LOCALE);
+    }
 
     @Before
     @SuppressWarnings("unchecked")
@@ -67,7 +89,7 @@ public class CliTest {
 
     @Test
     public void handlesMissingVersions() throws Exception {
-        when(location.getVersion()).thenReturn(Optional.<String>absent());
+        when(location.getVersion()).thenReturn(Optional.empty());
         final Cli newCli = new Cli(location, bootstrap, stdOut, stdErr);
 
         assertThat(newCli.run("--version"))

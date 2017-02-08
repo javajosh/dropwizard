@@ -7,6 +7,7 @@ import org.eclipse.jetty.server.session.SessionHandler;
 import org.eclipse.jetty.servlet.FilterHolder;
 import org.eclipse.jetty.servlet.ServletHolder;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceCollection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -14,9 +15,12 @@ import javax.servlet.Filter;
 import javax.servlet.FilterRegistration;
 import javax.servlet.Servlet;
 import javax.servlet.ServletRegistration;
-import java.util.*;
+import java.util.Arrays;
+import java.util.EventListener;
+import java.util.HashSet;
+import java.util.Set;
 
-import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.Objects.requireNonNull;
 
 public class ServletEnvironment {
     private static final Logger LOGGER = LoggerFactory.getLogger(ServletEnvironment.class);
@@ -39,11 +43,11 @@ public class ServletEnvironment {
      *         configuration
      */
     public ServletRegistration.Dynamic addServlet(String name, Servlet servlet) {
-        final ServletHolder holder = new NonblockingServletHolder(checkNotNull(servlet));
+        final ServletHolder holder = new NonblockingServletHolder(requireNonNull(servlet));
         holder.setName(name);
         handler.getServletHandler().addServlet(holder);
 
-        ServletRegistration.Dynamic registration = holder.getRegistration();
+        final ServletRegistration.Dynamic registration = holder.getRegistration();
         checkDuplicateRegistration(name, servlets, "servlet");
 
         return registration;
@@ -57,11 +61,11 @@ public class ServletEnvironment {
      * @return a {@link javax.servlet.ServletRegistration.Dynamic} instance allowing for further configuration
      */
     public ServletRegistration.Dynamic addServlet(String name, Class<? extends Servlet> klass) {
-        final ServletHolder holder = new ServletHolder(checkNotNull(klass));
+        final ServletHolder holder = new ServletHolder(requireNonNull(klass));
         holder.setName(name);
         handler.getServletHandler().addServlet(holder);
 
-        ServletRegistration.Dynamic registration = holder.getRegistration();
+        final ServletRegistration.Dynamic registration = holder.getRegistration();
         checkDuplicateRegistration(name, servlets, "servlet");
 
         return registration;
@@ -76,14 +80,7 @@ public class ServletEnvironment {
      *         configuration
      */
     public FilterRegistration.Dynamic addFilter(String name, Filter filter) {
-        final FilterHolder holder = new FilterHolder(checkNotNull(filter));
-        holder.setName(name);
-        handler.getServletHandler().addFilter(holder);
-
-        FilterRegistration.Dynamic registration = holder.getRegistration();
-        checkDuplicateRegistration(name, filters, "filter");
-
-        return registration;
+        return addFilter(name, new FilterHolder(requireNonNull(filter)));
     }
 
     /**
@@ -94,11 +91,14 @@ public class ServletEnvironment {
      * @return a {@link javax.servlet.FilterRegistration.Dynamic} instance allowing for further configuration
      */
     public FilterRegistration.Dynamic addFilter(String name, Class<? extends Filter> klass) {
-        final FilterHolder holder = new FilterHolder(checkNotNull(klass));
+        return addFilter(name, new FilterHolder(requireNonNull(klass)));
+    }
+
+    private FilterRegistration.Dynamic addFilter(String name, FilterHolder holder) {
         holder.setName(name);
         handler.getServletHandler().addFilter(holder);
 
-        FilterRegistration.Dynamic registration = holder.getRegistration();
+        final FilterRegistration.Dynamic registration = holder.getRegistration();
         checkDuplicateRegistration(name, filters, "filter");
 
         return registration;
@@ -131,20 +131,38 @@ public class ServletEnvironment {
     /**
      * Sets the base resource for this context.
      *
-     * @param baseResource The resource used as the base for all static content
-     *                     of this context.
+     * @param baseResource The resource to be used as the base for all static content of this context.
      */
     public void setBaseResource(Resource baseResource) {
         handler.setBaseResource(baseResource);
     }
 
     /**
-     * Sets the base resource for this context.
+     * Sets the base resources for this context.
      *
-     * @param resourceBase A string representing the base resource for the
-     *                     context. Any string accepted by Resource.newResource(String)
-     *                     may be passed and the call is equivalent to
-     *                     {@link setBaseResource(newResource(resourceBase))}
+     * @param baseResources The list of resources to be used as the base for all static
+     *                      content of this context.
+     */
+    public void setBaseResource(Resource... baseResources) {
+        handler.setBaseResource(new ResourceCollection(baseResources));
+    }
+
+    /**
+     * Sets the base resources for this context.
+     *
+     * @param resources A list of strings representing the base resources to serve static
+     *                  content for the context. Any string accepted by Resource.newResource(String)
+     *                  may be passed and the call is equivalent to {@link #setBaseResource(Resource...)}}
+     */
+    public void setBaseResource(String... resources) {
+        handler.setBaseResource(new ResourceCollection(resources));
+    }
+
+    /**
+     * Sets the base resource for this context.
+     * @param resourceBase A string representing the base resource for the context. Any
+     *                     string accepted by Resource.newResource(String) may be passed
+     *                     and the call is equivalent to {@link #setBaseResource(Resource)}}
      */
     public void setResourceBase(String resourceBase) {
         handler.setResourceBase(resourceBase);
@@ -191,7 +209,7 @@ public class ServletEnvironment {
     }
 
     private void checkDuplicateRegistration(String name, Set<String> items, String type) {
-        if(!items.add(name)) {
+        if (!items.add(name)) {
             LOGGER.warn("Overriding the existing {} registered with the name: {}", type, name);
         }
     }

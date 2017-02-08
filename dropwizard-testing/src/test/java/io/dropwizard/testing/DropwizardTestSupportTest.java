@@ -5,6 +5,7 @@ import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableMultimap;
 import io.dropwizard.Application;
 import io.dropwizard.Configuration;
+import io.dropwizard.servlets.tasks.PostBodyTask;
 import io.dropwizard.servlets.tasks.Task;
 import io.dropwizard.setup.Environment;
 import org.hibernate.validator.constraints.NotEmpty;
@@ -30,21 +31,19 @@ public class DropwizardTestSupportTest {
             new DropwizardTestSupport<>(TestApplication.class, resourceFilePath("test-config.yaml"));
 
     @BeforeClass
-    public static void setUp(){
+    public static void setUp() {
         TEST_SUPPORT.before();
     }
 
     @AfterClass
-    public static void tearDown(){
+    public static void tearDown() {
         TEST_SUPPORT.after();
     }
 
     @Test
     public void canGetExpectedResourceOverHttp() {
-        final String content = ClientBuilder.newClient().target("http://localhost:" +
-                TEST_SUPPORT.getLocalPort()
-                +"/test")
-                .request().get(String.class);
+        final String content = ClientBuilder.newClient().target(
+            "http://localhost:" + TEST_SUPPORT.getLocalPort() + "/test").request().get(String.class);
 
         assertThat(content, is("Yes, it's here"));
     }
@@ -78,11 +77,23 @@ public class DropwizardTestSupportTest {
         assertThat(response, is("Hello has been said to test_user"));
     }
 
+    @Test
+    public void canPerformAdminTaskWithPostBody() {
+        final String response
+            = ClientBuilder.newClient().target("http://localhost:"
+            + TEST_SUPPORT.getAdminPort() + "/tasks/echo")
+            .request()
+            .post(Entity.entity("Custom message", MediaType.TEXT_PLAIN), String.class);
+
+        assertThat(response, is("Custom message"));
+    }
+
     public static class TestApplication extends Application<TestConfiguration> {
         @Override
         public void run(TestConfiguration configuration, Environment environment) throws Exception {
             environment.jersey().register(new TestResource(configuration.getMessage()));
             environment.admin().addTask(new HelloTask());
+            environment.admin().addTask(new EchoTask());
         }
     }
 
@@ -127,6 +138,19 @@ public class DropwizardTestSupportTest {
             ImmutableCollection<String> names = parameters.get("name");
             String name = !names.isEmpty() ? names.asList().get(0) : "Anonymous";
             output.print("Hello has been said to " + name);
+            output.flush();
+        }
+    }
+
+    public static class EchoTask extends PostBodyTask {
+
+        public EchoTask() {
+            super("echo");
+        }
+
+        @Override
+        public void execute(ImmutableMultimap<String, String> parameters, String body, PrintWriter output) throws Exception {
+            output.print(body);
             output.flush();
         }
     }

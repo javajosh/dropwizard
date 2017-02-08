@@ -1,5 +1,6 @@
 package io.dropwizard.cli;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.dropwizard.Configuration;
 import io.dropwizard.configuration.ConfigurationException;
 import io.dropwizard.configuration.ConfigurationFactory;
@@ -7,16 +8,12 @@ import io.dropwizard.configuration.ConfigurationFactoryFactory;
 import io.dropwizard.configuration.ConfigurationSourceProvider;
 import io.dropwizard.setup.Bootstrap;
 import io.dropwizard.util.Generics;
-
-import java.io.IOException;
-
-import javax.validation.Validation;
-import javax.validation.Validator;
-
+import net.sourceforge.argparse4j.inf.Argument;
 import net.sourceforge.argparse4j.inf.Namespace;
 import net.sourceforge.argparse4j.inf.Subparser;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import javax.validation.Validator;
+import java.io.IOException;
 
 /**
  * A command whose first parameter is the location of a YAML configuration file. That file is parsed
@@ -54,13 +51,25 @@ public abstract class ConfiguredCommand<T extends Configuration> extends Command
      */
     @Override
     public void configure(Subparser subparser) {
-        subparser.addArgument("file").nargs("?").help("application configuration file");
+        addFileArgument(subparser);
+    }
+
+    /**
+     * Adds the configuration file argument for the configured command.
+     * @param subparser The subparser to register the argument on
+     * @return the register argument
+     */
+    protected Argument addFileArgument(Subparser subparser) {
+        return subparser.addArgument("file")
+                        .nargs("?")
+                        .help("application configuration file");
     }
 
     @Override
     @SuppressWarnings("unchecked")
-    public void run(Bootstrap<?> bootstrap, Namespace namespace) throws Exception {
-        configuration = parseConfiguration(((Bootstrap<T>)bootstrap).getConfigurationFactoryFactory(),
+    public void run(Bootstrap<?> wildcardBootstrap, Namespace namespace) throws Exception {
+        final Bootstrap<T> bootstrap = (Bootstrap<T>) wildcardBootstrap;
+        configuration = parseConfiguration(bootstrap.getConfigurationFactoryFactory(),
                                            bootstrap.getConfigurationSourceProvider(),
                                            bootstrap.getValidatorFactory().getValidator(),
                                            namespace.getString("file"),
@@ -73,7 +82,7 @@ public abstract class ConfiguredCommand<T extends Configuration> extends Command
                                                             bootstrap.getApplication().getName());
             }
 
-            run((Bootstrap<T>) bootstrap, namespace, configuration);
+            run(bootstrap, namespace, configuration);
         } finally {
             if (!asynchronous) {
                 cleanup();
@@ -109,7 +118,8 @@ public abstract class ConfiguredCommand<T extends Configuration> extends Command
                                  String path,
                                  Class<T> klass,
                                  ObjectMapper objectMapper) throws IOException, ConfigurationException {
-        final ConfigurationFactory<T> configurationFactory = configurationFactoryFactory.create(klass, validator, objectMapper, "dw");
+        final ConfigurationFactory<T> configurationFactory = configurationFactoryFactory
+                .create(klass, validator, objectMapper, "dw");
         if (path != null) {
             return configurationFactory.build(provider, path);
         }

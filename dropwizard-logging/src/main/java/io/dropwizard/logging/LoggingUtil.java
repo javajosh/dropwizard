@@ -14,9 +14,12 @@ public class LoggingUtil {
     private static final Duration LOGGER_CONTEXT_AWAITING_TIMEOUT = Duration.seconds(10);
     private static final Duration LOGGER_CONTEXT_AWAITING_SLEEP_TIME = Duration.milliseconds(100);
 
-    @GuardedBy("julHijackingLock")
+    @GuardedBy("JUL_HIJACKING_LOCK")
     private static boolean julHijacked = false;
-    private static final Lock julHijackingLock = new ReentrantLock();
+    private static final Lock JUL_HIJACKING_LOCK = new ReentrantLock();
+
+    private LoggingUtil() {
+    }
 
     /**
      * Acquires the logger context.
@@ -35,7 +38,7 @@ public class LoggingUtil {
     public static LoggerContext getLoggerContext() {
         final long startTime = System.nanoTime();
         while (true) {
-            ILoggerFactory iLoggerFactory = LoggerFactory.getILoggerFactory();
+            final ILoggerFactory iLoggerFactory = LoggerFactory.getILoggerFactory();
             if (iLoggerFactory instanceof LoggerContext) {
                 return (LoggerContext) iLoggerFactory;
             }
@@ -52,12 +55,12 @@ public class LoggingUtil {
 
     /**
      * Gets the root j.u.l.Logger and removes all registered handlers
-     * then redirects all active j.u.l. to SL4J
+     * then redirects all active j.u.l. to SLF4J
      * <p/>
      * N.B. This should only happen once, hence the flag and locking
      */
     public static void hijackJDKLogging() {
-        julHijackingLock.lock();
+        JUL_HIJACKING_LOCK.lock();
         try {
             if (!julHijacked) {
                 SLF4JBridgeHandler.removeHandlersForRootLogger();
@@ -65,7 +68,7 @@ public class LoggingUtil {
                 julHijacked = true;
             }
         } finally {
-            julHijackingLock.unlock();
+            JUL_HIJACKING_LOCK.unlock();
         }
     }
 }

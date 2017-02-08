@@ -3,9 +3,11 @@ package io.dropwizard.jackson;
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.guava.GuavaModule;
-import com.fasterxml.jackson.datatype.jdk7.Jdk7Module;
+import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 import com.fasterxml.jackson.datatype.joda.JodaModule;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.module.afterburner.AfterburnerModule;
+import com.fasterxml.jackson.module.paramnames.ParameterNamesModule;
 
 /**
  * A utility class for Jackson.
@@ -37,6 +39,18 @@ public class Jackson {
         return configure(mapper);
     }
 
+    /**
+     * Creates a new minimal {@link ObjectMapper} that will work with Dropwizard out of box.
+     * <p><b>NOTE:</b> Use it, if the default Dropwizard's {@link ObjectMapper}, created in
+     * {@link #newObjectMapper()}, is too aggressive for you.</p>
+     */
+    public static ObjectMapper newMinimalObjectMapper() {
+        return new ObjectMapper()
+                .registerModule(new GuavaModule())
+                .registerModule(new LogbackModule())
+                .setSubtypeResolver(new DiscoverableSubtypeResolver());
+    }
+
     private static ObjectMapper configure(ObjectMapper mapper) {
         mapper.registerModule(new GuavaModule());
         mapper.registerModule(new LogbackModule());
@@ -44,7 +58,9 @@ public class Jackson {
         mapper.registerModule(new JodaModule());
         mapper.registerModule(new AfterburnerModule());
         mapper.registerModule(new FuzzyEnumModule());
-        mapper.registerModule(new Jdk7Module());
+        mapper.registerModule(new ParameterNamesModule());
+        mapper.registerModules(new Jdk8Module());
+        mapper.registerModules(new JavaTimeModule());
         mapper.setPropertyNamingStrategy(new AnnotationSensitivePropertyNamingStrategy());
         mapper.setSubtypeResolver(new DiscoverableSubtypeResolver());
 

@@ -1,19 +1,19 @@
 package com.example.helloworld;
 
+import com.example.helloworld.api.Saying;
 import com.example.helloworld.core.Person;
-import com.example.helloworld.core.Saying;
-import com.google.common.base.Optional;
 import io.dropwizard.testing.ConfigOverride;
 import io.dropwizard.testing.ResourceHelpers;
 import io.dropwizard.testing.junit.DropwizardAppRule;
-import org.junit.*;
+import org.junit.BeforeClass;
+import org.junit.ClassRule;
+import org.junit.Test;
 
-import javax.ws.rs.client.Client;
-import javax.ws.rs.client.ClientBuilder;
 import javax.ws.rs.client.Entity;
 import javax.ws.rs.core.MediaType;
 import java.io.File;
 import java.io.IOException;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -27,21 +27,9 @@ public class IntegrationTest {
             HelloWorldApplication.class, CONFIG_PATH,
             ConfigOverride.config("database.url", "jdbc:h2:" + TMP_FILE));
 
-    private Client client;
-
     @BeforeClass
     public static void migrateDb() throws Exception {
         RULE.getApplication().run("db", "migrate", CONFIG_PATH);
-    }
-
-    @Before
-    public void setUp() throws Exception {
-        client = ClientBuilder.newClient();
-    }
-
-    @After
-    public void tearDown() throws Exception {
-        client.close();
     }
 
     private static String createTempFile() {
@@ -54,8 +42,8 @@ public class IntegrationTest {
 
     @Test
     public void testHelloWorld() throws Exception {
-        final Optional<String> name = Optional.fromNullable("Dr. IntegrationTest");
-        final Saying saying = client.target("http://localhost:" + RULE.getLocalPort() + "/hello-world")
+        final Optional<String> name = Optional.of("Dr. IntegrationTest");
+        final Saying saying = RULE.client().target("http://localhost:" + RULE.getLocalPort() + "/hello-world")
                 .queryParam("name", name.get())
                 .request()
                 .get(Saying.class);
@@ -65,7 +53,7 @@ public class IntegrationTest {
     @Test
     public void testPostPerson() throws Exception {
         final Person person = new Person("Dr. IntegrationTest", "Chief Wizard");
-        final Person newPerson = client.target("http://localhost:" + RULE.getLocalPort() + "/people")
+        final Person newPerson = RULE.client().target("http://localhost:" + RULE.getLocalPort() + "/people")
                 .request()
                 .post(Entity.entity(person, MediaType.APPLICATION_JSON_TYPE))
                 .readEntity(Person.class);

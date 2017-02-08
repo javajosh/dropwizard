@@ -22,9 +22,12 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 public class BootstrapLogging {
 
-    @GuardedBy("bootsrappingLock")
+    @GuardedBy("BOOTSTRAPPING_LOCK")
     private static boolean bootstrapped = false;
-    private static final Lock bootstrappingLock = new ReentrantLock();
+    private static final Lock BOOTSTRAPPING_LOCK = new ReentrantLock();
+
+    private BootstrapLogging() {
+    }
 
     // initially configure for WARN+ console logging
     public static void bootstrap() {
@@ -34,7 +37,7 @@ public class BootstrapLogging {
     public static void bootstrap(Level level) {
         LoggingUtil.hijackJDKLogging();
 
-        bootstrappingLock.lock();
+        BOOTSTRAPPING_LOCK.lock();
         try {
             if (bootstrapped) {
                 return;
@@ -53,7 +56,7 @@ public class BootstrapLogging {
             appender.addFilter(filter);
             appender.setContext(root.getLoggerContext());
 
-            LayoutWrappingEncoder<ILoggingEvent> layoutEncoder = new LayoutWrappingEncoder<>();
+            final LayoutWrappingEncoder<ILoggingEvent> layoutEncoder = new LayoutWrappingEncoder<>();
             layoutEncoder.setLayout(formatter);
             appender.setEncoder(layoutEncoder);
             appender.start();
@@ -61,7 +64,7 @@ public class BootstrapLogging {
             root.addAppender(appender);
             bootstrapped = true;
         } finally {
-            bootstrappingLock.unlock();
+            BOOTSTRAPPING_LOCK.unlock();
         }
     }
 }

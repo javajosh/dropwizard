@@ -4,12 +4,11 @@ import com.google.common.collect.ImmutableList;
 import org.junit.Test;
 
 import javax.validation.Valid;
-import javax.validation.Validation;
 import javax.validation.Validator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SuppressWarnings({"FieldMayBeFinal","MethodMayBeStatic","UnusedDeclaration"})
+@SuppressWarnings({"FieldMayBeFinal", "MethodMayBeStatic", "UnusedDeclaration"})
 public class MethodValidatorTest {
     public static class SubExample {
         @ValidationMethod(message = "also needs something special")
@@ -33,7 +32,7 @@ public class MethodValidatorTest {
         }
     }
 
-    private final Validator validator = Validation.buildDefaultValidatorFactory().getValidator();
+    private final Validator validator = BaseValidator.newValidator();
 
     @Test
     public void complainsAboutMethodsWhichReturnFalse() throws Exception {
@@ -42,6 +41,6 @@ public class MethodValidatorTest {
 
         assertThat(errors)
                 .containsOnly("must have a false thing",
-                              "subExample also needs something special");
+                              "also needs something special");
     }
 }

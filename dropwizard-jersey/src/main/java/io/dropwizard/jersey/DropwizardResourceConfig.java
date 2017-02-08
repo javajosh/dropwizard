@@ -2,14 +2,15 @@ package io.dropwizard.jersey;
 
 import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.jersey2.InstrumentedResourceMethodApplicationListener;
+import com.fasterxml.classmate.ResolvedType;
+import com.fasterxml.classmate.TypeResolver;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ComparisonChain;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Sets;
+import com.google.common.collect.Ordering;
 import io.dropwizard.jersey.caching.CacheControlledResponseFeature;
-import io.dropwizard.jersey.guava.OptionalMessageBodyWriter;
-import io.dropwizard.jersey.guava.OptionalParamFeature;
+import io.dropwizard.jersey.params.AbstractParamConverterProvider;
 import io.dropwizard.jersey.sessions.SessionFactoryProvider;
+import io.dropwizard.jersey.validation.FuzzyEnumParamConverterProvider;
 import org.glassfish.jersey.server.ResourceConfig;
 import org.glassfish.jersey.server.ServerProperties;
 import org.glassfish.jersey.server.model.Resource;
@@ -18,22 +19,25 @@ import org.glassfish.jersey.server.monitoring.ApplicationEvent;
 import org.glassfish.jersey.server.monitoring.ApplicationEventListener;
 import org.glassfish.jersey.server.monitoring.RequestEvent;
 import org.glassfish.jersey.server.monitoring.RequestEventListener;
-import org.glassfish.jersey.server.validation.ValidationFeature;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.ws.rs.Path;
 import javax.ws.rs.ext.Provider;
-import java.lang.annotation.Annotation;
 import java.io.Serializable;
+import java.lang.annotation.Annotation;
 import java.util.Comparator;
-import java.util.Collections;
-import java.util.List;
+import java.util.HashSet;
 import java.util.Set;
+import java.util.TreeSet;
+import java.util.regex.Pattern;
 
 public class DropwizardResourceConfig extends ResourceConfig {
     private static final Logger LOGGER = LoggerFactory.getLogger(DropwizardResourceConfig.class);
     private static final String NEWLINE = String.format("%n");
+    private static final TypeResolver TYPE_RESOLVER = new TypeResolver();
+    
+    private static final Pattern PATH_DIRTY_SLASHES = Pattern.compile("\\s*/\\s*/+\\s*");
 
     private String urlPattern = "/*";
 
@@ -45,7 +49,6 @@ public class DropwizardResourceConfig extends ResourceConfig {
         this(true, null);
     }
 
-    @SuppressWarnings("unchecked")
     public DropwizardResourceConfig(boolean testOnly, MetricRegistry metricRegistry) {
         super();
 
@@ -58,12 +61,19 @@ public class DropwizardResourceConfig extends ResourceConfig {
             // create a subclass to pin it to Throwable
             register(new ComponentLoggingListener(this));
         }
+
         register(new InstrumentedResourceMethodApplicationListener(metricRegistry));
         register(CacheControlledResponseFeature.class);
-        register(OptionalMessageBodyWriter.class);
-        register(OptionalParamFeature.class);
+        register(io.dropwizard.jersey.guava.OptionalMessageBodyWriter.class);
+        register(io.dropwizard.jersey.guava.OptionalParamFeature.class);
+        register(io.dropwizard.jersey.optional.OptionalMessageBodyWriter.class);
+        register(io.dropwizard.jersey.optional.OptionalDoubleMessageBodyWriter.class);
+        register(io.dropwizard.jersey.optional.OptionalIntMessageBodyWriter.class);
+        register(io.dropwizard.jersey.optional.OptionalLongMessageBodyWriter.class);
+        register(io.dropwizard.jersey.optional.OptionalParamFeature.class);
+        register(AbstractParamConverterProvider.class);
+        register(new FuzzyEnumParamConverterProvider());
         register(new SessionFactoryProvider.Binder());
-        register(ValidationFeature.class);
     }
 
     public static DropwizardResourceConfig forTesting(MetricRegistry metricRegistry) {
@@ -91,7 +101,7 @@ public class DropwizardResourceConfig extends ResourceConfig {
      */
     @VisibleForTesting
     Set<Class<?>> allClasses() {
-        final Set<Class<?>> allClasses = Sets.newHashSet(getClasses());
+        final Set<Class<?>> allClasses = new HashSet<>(getClasses());
         for (Object singleton : getSingletons()) {
             allClasses.add(singleton.getClass());
         }
@@ -99,7 +109,7 @@ public class DropwizardResourceConfig extends ResourceConfig {
     }
 
     private Set<String> canonicalNamesByAnnotation(final Class<? extends Annotation> annotation) {
-        final Set<String> result = Sets.newHashSet();
+        final Set<String> result = new HashSet<>();
         for (Class<?> clazz : getClasses()) {
             if (clazz.isAnnotationPresent(annotation)) {
                 result.add(clazz.getCanonicalName());
@@ -110,25 +120,38 @@ public class DropwizardResourceConfig extends ResourceConfig {
 
     public String getEndpointsInfo() {
         final StringBuilder msg = new StringBuilder(1024);
-        final List<EndpointLogLine> endpointLogLines = Lists.newArrayList();
+        final Set<EndpointLogLine> endpointLogLines = new TreeSet<>(new EndpointComparator());
 
         msg.append("The following paths were found for the configured resources:");
         msg.append(NEWLINE).append(NEWLINE);
 
-        final Set<Class<?>> allResources = Sets.newHashSet();
+        final Set<Class<?>> allResourcesClasses = new HashSet<>();
         for (Class<?> clazz : allClasses()) {
             if (!clazz.isInterface() && Resource.from(clazz) != null) {
-                allResources.add(clazz);
+                allResourcesClasses.add(clazz);
             }
         }
 
-        for (Class<?> klass : allResources) {
+        for (Class<?> klass : allResourcesClasses) {
             new EndpointLogger(urlPattern, klass).populate(endpointLogLines);
+        }
+        
+        final Set<Resource> allResources = this.getResources();
+        for (Resource res : allResources) {
+            for (Resource childRes : res.getChildResources()) {
+                // It is not necessary to check if a handler class is already being logged.
+                //
+                // This code will never be reached because of ambiguous (sub-)resource methods
+                // related to the OPTIONS method and @Consumes/@Produces annotations.
+                
+                for (Class<?> childResHandlerClass : childRes.getHandlerClasses()) {
+                    EndpointLogger epl = new EndpointLogger(urlPattern, childResHandlerClass);
+                    epl.populate(cleanUpPath(res.getPath() + epl.rootPath), epl.klass, false, childRes, endpointLogLines);
+                }
+            }
         }
 
         if (!endpointLogLines.isEmpty()) {
-            Collections.sort(endpointLogLines, new EndpointComparator());
-
             for (EndpointLogLine line : endpointLogLines) {
                 msg.append(line).append(NEWLINE);
             }
@@ -137,6 +160,11 @@ public class DropwizardResourceConfig extends ResourceConfig {
         }
 
         return msg.toString();
+    }
+    
+    @VisibleForTesting
+    String cleanUpPath(String path) {
+        return PATH_DIRTY_SLASHES.matcher(path).replaceAll("/").trim();
     }
 
 
@@ -148,20 +176,22 @@ public class DropwizardResourceConfig extends ResourceConfig {
         private final String rootPath;
         private final Class<?> klass;
 
-        public EndpointLogger(String urlPattern, Class<?> klass) {
+        EndpointLogger(String urlPattern, Class<?> klass) {
             this.rootPath = urlPattern.endsWith("/*") ? urlPattern.substring(0, urlPattern.length() - 1) : urlPattern;
             this.klass = klass;
         }
 
-        public void populate(List<EndpointLogLine> endpointLogLines) {
+        public void populate(Set<EndpointLogLine> endpointLogLines) {
             populate(this.rootPath, klass, false, endpointLogLines);
         }
 
-        private void populate(String basePath, Class<?> klass, boolean isLocator, List<EndpointLogLine> endpointLogLines) {
+        private void populate(String basePath, Class<?> klass, boolean isLocator,
+                              Set<EndpointLogLine> endpointLogLines) {
             populate(basePath, klass, isLocator, Resource.from(klass), endpointLogLines);
         }
 
-        private void populate(String basePath, Class<?> klass, boolean isLocator, Resource resource, List<EndpointLogLine> endpointLogLines) {
+        private void populate(String basePath, Class<?> klass, boolean isLocator, Resource resource,
+                              Set<EndpointLogLine> endpointLogLines) {
             if (!isLocator) {
                 basePath = normalizePath(basePath, resource.getPath());
             }
@@ -171,19 +201,31 @@ public class DropwizardResourceConfig extends ResourceConfig {
             }
 
             for (Resource childResource : resource.getChildResources()) {
-                for (ResourceMethod method : childResource.getResourceMethods()) {
+                for (ResourceMethod method : childResource.getAllMethods()) {
                     if (method.getType() == ResourceMethod.JaxrsType.RESOURCE_METHOD) {
                         final String path = normalizePath(basePath, childResource.getPath());
                         endpointLogLines.add(new EndpointLogLine(method.getHttpMethod(), path, klass));
                     } else if (method.getType() == ResourceMethod.JaxrsType.SUB_RESOURCE_LOCATOR) {
                         final String path = normalizePath(basePath, childResource.getPath());
-                        populate(path, method.getInvocable().getRawResponseType(), true, endpointLogLines);
+                        final ResolvedType responseType = TYPE_RESOLVER
+                                .resolve(method.getInvocable().getResponseType());
+                        final Class<?> erasedType = !responseType.getTypeBindings().isEmpty() ?
+                                responseType.getTypeBindings().getBoundType(0).getErasedType() :
+                                responseType.getErasedType();
+                        if (Resource.from(erasedType) == null) {
+                            endpointLogLines.add(new EndpointLogLine(method.getHttpMethod(), path, erasedType));
+                        } else {
+                            populate(path, erasedType, true, endpointLogLines);
+                        }
                     }
                 }
             }
         }
 
-        private String normalizePath(String basePath, String path) {
+        private static String normalizePath(String basePath, String path) {
+            if (path == null) {
+                return basePath;
+            }
             if (basePath.endsWith("/")) {
                 return path.startsWith("/") ? basePath + path.substring(1) : basePath + path;
             }
@@ -196,7 +238,7 @@ public class DropwizardResourceConfig extends ResourceConfig {
         private final String basePath;
         private final Class<?> klass;
 
-        public EndpointLogLine(String httpMethod, String basePath, Class<?> klass) {
+        EndpointLogLine(String httpMethod, String basePath, Class<?> klass) {
             this.basePath = basePath;
             this.klass = klass;
             this.httpMethod = httpMethod;
@@ -204,7 +246,8 @@ public class DropwizardResourceConfig extends ResourceConfig {
 
         @Override
         public String toString() {
-            return String.format("    %-7s %s (%s)", httpMethod, basePath, klass.getCanonicalName());
+            final String method = httpMethod == null ? "UNKNOWN" : httpMethod;
+            return String.format("    %-7s %s (%s)", method, basePath, klass.getCanonicalName());
         }
     }
 
@@ -215,22 +258,22 @@ public class DropwizardResourceConfig extends ResourceConfig {
         public int compare(EndpointLogLine endpointA, EndpointLogLine endpointB) {
             return ComparisonChain.start()
                 .compare(endpointA.basePath, endpointB.basePath)
-                .compare(endpointA.httpMethod, endpointB.httpMethod)
+                .compare(endpointA.httpMethod, endpointB.httpMethod, Comparator.nullsLast(Ordering.natural()))
                 .result();
         }
     }
 
     private static class ComponentLoggingListener implements ApplicationEventListener {
-        final DropwizardResourceConfig config;
+        private final DropwizardResourceConfig config;
 
-        public ComponentLoggingListener(DropwizardResourceConfig config) {
+        ComponentLoggingListener(DropwizardResourceConfig config) {
             this.config = config;
         }
 
         @Override
         public void onEvent(ApplicationEvent event) {
             if (event.getType() == ApplicationEvent.Type.INITIALIZATION_APP_FINISHED) {
-                this.config.logComponents();
+                config.logComponents();
             }
         }
 
